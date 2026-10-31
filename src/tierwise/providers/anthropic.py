@@ -2,7 +2,7 @@
 
 import json
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any
 
@@ -267,7 +267,7 @@ class AnthropicProvider:
         )
         return parse_or_retry(self.name, data, from_anthropic)
 
-    async def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]:
+    async def stream(self, req: ChatRequest, model_id: str) -> AsyncGenerator[StreamChunk, None]:
         state = _StreamState()
         events = stream_sse(
             self._client,

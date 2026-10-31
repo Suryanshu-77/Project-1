@@ -1,20 +1,20 @@
-"""HTTP endpoints. In M1 the model id picks the provider; routing arrives in M3."""
+"""HTTP endpoints. The registry decides which provider serves a model; routing arrives in M3."""
 
+import time
 import uuid
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
-from tierwise.api.errors import GatewayError
-from tierwise.providers.base import Provider
-from tierwise.schema import ChatRequest
+from tierwise.api.errors import GatewayError, gateway_error_from
+from tierwise.api.streaming import sse_response
+from tierwise.costs import cost_usd
+from tierwise.providers.base import Provider, ProviderError
+from tierwise.registry import ModelSpec, Registry
+from tierwise.schema import ChatRequest, Usage
+from tierwise.store import RequestLog, RequestRecord
 
 router = APIRouter()
-
-_PREFIXES: dict[str, tuple[str, ...]] = {
-    "anthropic": ("claude-",),
-    "openai": ("gpt-", "o1", "o3", "o4", "chatgpt-"),
-}
 
 
 class UnknownModel(GatewayError):
@@ -22,29 +22,105 @@ class UnknownModel(GatewayError):
         super().__init__(404, "model_not_found", f"The model '{model}' is not available.")
 
 
-def resolve_provider(model: str) -> str:
-    for provider, prefixes in _PREFIXES.items():
-        if model.startswith(prefixes):
-            return provider
-    raise UnknownModel(model)
+def resolve(
+    model: str, registry: Registry, providers: dict[str, Provider]
+) -> tuple[ModelSpec, Provider]:
+    spec = registry.get(model)
+    provider = providers.get(spec.provider) if spec is not None else None
+    if spec is None or provider is None:
+        raise UnknownModel(model)
+    return spec, provider
+
+
+class _Recorder:
+    """Builds the one log record each request produces, whatever its outcome."""
+
+    def __init__(self, log: RequestLog, registry: Registry, model: str, stream: bool) -> None:
+        self.log = log
+        self.registry = registry
+        self.model = model
+        self.stream = stream
+        self.request_id = uuid.uuid4().hex
+        self.started = time.perf_counter()
+        self.spec: ModelSpec | None = None
+
+    def costs(self, usage: Usage | None) -> tuple[float | None, float | None]:
+        if usage is None or self.spec is None:
+            return None, None
+        return cost_usd(usage, self.spec), cost_usd(usage, self.registry.baseline())
+
+    def done(self, usage: Usage | None, status: int, error_code: str | None) -> None:
+        cost, baseline = self.costs(usage)
+        self.log.submit(
+            RequestRecord(
+                id=self.request_id,
+                ts=time.time(),
+                model=self.model,
+                provider=self.spec.provider if self.spec else "",
+                status=status,
+                stream=self.stream,
+                latency_ms=(time.perf_counter() - self.started) * 1000,
+                tokens_in=usage.input_tokens if usage else None,
+                tokens_cached=usage.cached_input_tokens if usage else None,
+                tokens_out=usage.output_tokens if usage else None,
+                cost_usd=cost,
+                baseline_cost_usd=baseline,
+                error_code=error_code,
+            )
+        )
 
 
 @router.post("/v1/chat/completions")
-async def chat_completions(req: ChatRequest, request: Request) -> JSONResponse:
-    if req.stream:
-        raise GatewayError(400, "unsupported_parameter", "stream=true is not supported yet.")
-    providers: dict[str, Provider] = request.app.state.providers
-    provider = providers.get(resolve_provider(req.model))
-    if provider is None:
-        raise UnknownModel(req.model)
-    response = await provider.chat(req, req.model)
-    headers = {
-        "X-Tierwise-Model": req.model,
-        "X-Tierwise-Provider": provider.name,
-        "X-Tierwise-Reason": "override",
-        "X-Tierwise-Request-Id": uuid.uuid4().hex,
-    }
+async def chat_completions(req: ChatRequest, request: Request) -> Response:
+    state = request.app.state
+    recorder = _Recorder(state.log, state.registry, req.model, req.stream)
+    try:
+        spec, provider = resolve(req.model, state.registry, state.providers)
+        recorder.spec = spec
+        headers = {
+            "X-Tierwise-Model": req.model,
+            "X-Tierwise-Provider": provider.name,
+            "X-Tierwise-Reason": "override",
+            "X-Tierwise-Request-Id": recorder.request_id,
+        }
+        if req.stream:
+            chunks = provider.stream(req, spec.wire_id)
+            try:
+                # Wait for the first chunk so early failures become ordinary HTTP errors.
+                first = await anext(chunks, None)
+            except BaseException:
+                await chunks.aclose()
+                raise
+            return sse_response(
+                chunks,
+                first,
+                request_id=recorder.request_id,
+                model=req.model,
+                headers=headers,
+                on_done=recorder.done,
+            )
+        response = await provider.chat(req, spec.wire_id)
+    except (GatewayError, ProviderError) as exc:
+        err = exc if isinstance(exc, GatewayError) else gateway_error_from(exc)
+        recorder.done(None, err.status, err.code)
+        raise err from exc
+    cost, _ = recorder.costs(response.usage)
+    recorder.done(response.usage, 200, None)
+    if cost is not None:
+        headers["X-Tierwise-Cost-USD"] = f"{cost:.6f}"
     return JSONResponse(response.to_openai(), headers=headers)
+
+
+@router.get("/v1/models")
+async def list_models(request: Request) -> dict[str, object]:
+    registry: Registry = request.app.state.registry
+    providers: dict[str, Provider] = request.app.state.providers
+    data = [
+        {"id": m.id, "object": "model", "owned_by": m.provider}
+        for m in registry.models
+        if m.provider in providers
+    ]
+    return {"object": "list", "data": data}
 
 
 @router.get("/healthz")

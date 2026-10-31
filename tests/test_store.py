@@ -83,3 +83,13 @@ async def test_null_usage_fields_persist_as_none(tmp_path: Path) -> None:
     log.submit(record)
     await log.stop()
     assert await log.fetch_all() == [record]
+
+
+async def test_fetch_after_stop_leaves_no_pooled_connections(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit(_record())
+    await log.stop()
+    await log.fetch_all()
+    assert log._engine is not None
+    assert log._engine.pool.checkedin() == 0

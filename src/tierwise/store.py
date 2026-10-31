@@ -134,7 +134,10 @@ class RequestLog:
             return []
         async with self._engine.connect() as conn:
             rows = await conn.execute(select(requests_table).order_by(requests_table.c.ts))
-            return [RequestRecord(**row._mapping) for row in rows]
+            records = [RequestRecord(**row._mapping) for row in rows]
+        if self._task is None:  # stopped: don't leave a pooled connection behind
+            await self._engine.dispose()
+        return records
 
     async def _run(self) -> None:
         while not (self._closing and self._queue.empty()):

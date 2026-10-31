@@ -1,7 +1,7 @@
 """OpenAI Chat Completions adapter; also serves any OpenAI-compatible host via ``base_url``."""
 
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any, cast, get_args
 
@@ -108,7 +108,7 @@ class OpenAIProvider:
         )
         return parse_or_retry(self.name, data, lambda d: from_openai(d, provider=self.name))
 
-    async def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]:
+    async def stream(self, req: ChatRequest, model_id: str) -> AsyncGenerator[StreamChunk, None]:
         body = to_openai_request(req, model_id) | {"stream": True}
         if self.include_usage:
             body["stream_options"] = {"include_usage": True}

@@ -1,7 +1,7 @@
 """Shared provider plumbing: the adapter protocol, typed errors and the HTTP send helper."""
 
 import json
-from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
 import httpx
@@ -36,7 +36,7 @@ class Provider(Protocol):
 
     async def chat(self, req: ChatRequest, model_id: str) -> ChatResponse: ...
 
-    def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]: ...
+    def stream(self, req: ChatRequest, model_id: str) -> AsyncGenerator[StreamChunk, None]: ...
 
 
 def classify_http_error(provider: str, status: int, body: str) -> ProviderError:

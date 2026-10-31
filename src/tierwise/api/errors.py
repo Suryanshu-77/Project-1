@@ -24,7 +24,7 @@ def error_response(status: int, code: str, message: str, type_: str) -> JSONResp
     )
 
 
-def _from_provider_error(exc: ProviderError) -> GatewayError:
+def gateway_error_from(exc: ProviderError) -> GatewayError:
     if isinstance(exc, AuthError):
         # Never echo the upstream body: it can contain (part of) our key.
         message = f"Upstream provider '{exc.provider}' rejected the gateway's credentials."
@@ -44,7 +44,7 @@ def install_error_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(ProviderError)
     async def _provider(_: Request, exc: ProviderError) -> JSONResponse:
-        err = _from_provider_error(exc)
+        err = gateway_error_from(exc)
         return error_response(err.status, err.code, err.message, err.type)
 
     @app.exception_handler(RequestValidationError)

@@ -3,7 +3,7 @@
 import json
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import aclosing
 from typing import Any
 
@@ -233,7 +233,7 @@ class GeminiProvider:
         )
         return parse_or_retry(self.name, data, lambda d: from_gemini(d, model_id))
 
-    async def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]:
+    async def stream(self, req: ChatRequest, model_id: str) -> AsyncGenerator[StreamChunk, None]:
         state = _StreamState()
         events = stream_sse(
             self._client,
