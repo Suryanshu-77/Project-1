@@ -3,11 +3,18 @@
 import json
 import time
 from collections.abc import AsyncIterator
+from contextlib import aclosing
 from typing import Any
 
 import httpx
 
-from tierwise.providers.base import FatalError, parse_or_retry, send
+from tierwise.providers.base import (
+    FatalError,
+    RetryableError,
+    parse_or_retry,
+    send,
+    stream_sse,
+)
 from tierwise.schema import (
     ChatRequest,
     ChatResponse,
@@ -18,6 +25,7 @@ from tierwise.schema import (
     StreamChunk,
     TextPart,
     ToolCall,
+    ToolCallDelta,
     Usage,
 )
 
@@ -169,6 +177,18 @@ def to_anthropic(req: ChatRequest, model_id: str) -> dict[str, Any]:
     return body
 
 
+def _usage(usage: dict[str, Any]) -> Usage:
+    # Anthropic's input_tokens excludes cached reads and writes; ours is the whole prompt.
+    cache_read = usage.get("cache_read_input_tokens") or 0
+    cache_write = usage.get("cache_creation_input_tokens") or 0
+    return Usage(
+        input_tokens=(usage.get("input_tokens") or 0) + cache_read + cache_write,
+        output_tokens=usage.get("output_tokens") or 0,
+        cached_input_tokens=cache_read,
+        cache_write_tokens=cache_write,
+    )
+
+
 def from_anthropic(data: dict[str, Any]) -> ChatResponse:
     texts: list[str] = []
     calls: list[ToolCall] = []
@@ -182,9 +202,6 @@ def from_anthropic(data: dict[str, Any]) -> ChatResponse:
                     function=FunctionCall(name=block["name"], arguments=json.dumps(block["input"])),
                 )
             )
-    usage = data.get("usage", {})
-    cache_read = usage.get("cache_read_input_tokens") or 0
-    cache_write = usage.get("cache_creation_input_tokens") or 0
     return ChatResponse(
         id=data["id"],
         model=data["model"],
@@ -192,14 +209,48 @@ def from_anthropic(data: dict[str, Any]) -> ChatResponse:
         content="".join(texts) if texts else None,
         tool_calls=calls or None,
         finish_reason=_STOP_REASONS.get(data.get("stop_reason") or "", "stop"),
-        usage=Usage(
-            input_tokens=(usage.get("input_tokens") or 0) + cache_read + cache_write,
-            output_tokens=usage.get("output_tokens") or 0,
-            cached_input_tokens=cache_read,
-            cache_write_tokens=cache_write,
-        ),
+        usage=_usage(data.get("usage") or {}),
         created=int(time.time()),
     )
+
+
+class _StreamState:
+    """Turns Messages API stream events into normalized chunks."""
+
+    def __init__(self) -> None:
+        self.usage: dict[str, Any] = {}
+        self.finish: FinishReason = "stop"
+        self.tool_index: dict[int, int] = {}  # Anthropic block index -> tool ordinal
+
+    def handle(self, event: dict[str, Any]) -> list[StreamChunk]:
+        kind = event.get("type")
+        if kind == "message_start":
+            self.usage.update(event["message"].get("usage") or {})
+        elif kind == "content_block_start" and event["content_block"]["type"] == "tool_use":
+            block = event["content_block"]
+            ordinal = self.tool_index[event["index"]] = len(self.tool_index)
+            delta = ToolCallDelta(index=ordinal, id=block["id"], name=block["name"])
+            return [StreamChunk(tool_calls=[delta])]
+        elif kind == "content_block_delta":
+            delta = event["delta"]
+            if delta["type"] == "text_delta":
+                return [StreamChunk(content=delta["text"])]
+            if delta["type"] == "input_json_delta":
+                ordinal = self.tool_index[event["index"]]
+                fragment = ToolCallDelta(index=ordinal, arguments=delta["partial_json"])
+                return [StreamChunk(tool_calls=[fragment])]
+        elif kind == "message_delta":
+            self.finish = _STOP_REASONS.get(event["delta"].get("stop_reason") or "", "stop")
+            self.usage.update(event.get("usage") or {})
+        elif kind == "message_stop":
+            return [StreamChunk(finish_reason=self.finish), StreamChunk(usage=_usage(self.usage))]
+        elif kind == "error":
+            error = event.get("error") or {}
+            message = str(error.get("message", ""))
+            if error.get("type") == "overloaded_error":
+                raise RetryableError("anthropic", None, message)
+            raise FatalError("anthropic", None, message)
+        return []  # ping, content_block_stop, text block starts
 
 
 class AnthropicProvider:
@@ -219,10 +270,24 @@ class AnthropicProvider:
             "POST",
             f"{self._base_url}/v1/messages",
             json=to_anthropic(req, model_id),
-            headers={"x-api-key": self._api_key, "anthropic-version": API_VERSION},
+            headers=self._headers(),
         )
         return parse_or_retry(self.name, data, from_anthropic)
 
     async def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]:
-        raise NotImplementedError
-        yield  # pragma: no cover - makes this an async generator
+        state = _StreamState()
+        events = stream_sse(
+            self._client,
+            self.name,
+            "POST",
+            f"{self._base_url}/v1/messages",
+            json=to_anthropic(req, model_id) | {"stream": True},
+            headers=self._headers(),
+        )
+        async with aclosing(events):
+            async for event in events:
+                for chunk in parse_or_retry(self.name, event, state.handle):
+                    yield chunk
+
+    def _headers(self) -> dict[str, str]:
+        return {"x-api-key": self._api_key, "anthropic-version": API_VERSION}
