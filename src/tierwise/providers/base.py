@@ -67,6 +67,17 @@ async def send(
     return data
 
 
+def parse_tool_arguments(provider: str, arguments: str, where: str) -> dict[str, Any]:
+    """Decode an OpenAI tool call's JSON arguments; anything but an object is a bad request."""
+    try:
+        value = json.loads(arguments or "{}")
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise FatalError(provider, 400, f"{where}.function.arguments must be a JSON object")
+    return value
+
+
 def parse_or_retry[T](
     provider: str, data: dict[str, Any], parse: Callable[[dict[str, Any]], T]
 ) -> T:

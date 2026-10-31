@@ -12,6 +12,7 @@ from tierwise.providers.base import (
     FatalError,
     RetryableError,
     parse_or_retry,
+    parse_tool_arguments,
     send,
     stream_sse,
 )
@@ -72,16 +73,6 @@ def _text_of(content: str | list[ContentPart] | None) -> str:
     return "".join(part.text for part in content if isinstance(part, TextPart))
 
 
-def _tool_input(arguments: str, where: str) -> dict[str, Any]:
-    try:
-        value = json.loads(arguments or "{}")
-    except ValueError:
-        value = None
-    if not isinstance(value, dict):
-        raise FatalError("anthropic", 400, f"{where}.function.arguments must be a JSON object")
-    return value
-
-
 def _input_schema(parameters: dict[str, Any]) -> dict[str, Any]:
     # Anthropic requires an object schema; OpenAI allows tools with no parameters at all.
     return {"type": "object", "properties": {}, **parameters}
@@ -114,8 +105,10 @@ def _convert_message(msg: Message, index: int) -> dict[str, Any]:
                 "type": "tool_use",
                 "id": call.id,
                 "name": call.function.name,
-                "input": _tool_input(
-                    call.function.arguments, f"messages[{index}].tool_calls[{position}]"
+                "input": parse_tool_arguments(
+                    "anthropic",
+                    call.function.arguments,
+                    f"messages[{index}].tool_calls[{position}]",
                 ),
             }
             for position, call in enumerate(msg.tool_calls)
