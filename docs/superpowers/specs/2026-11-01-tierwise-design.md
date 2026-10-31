@@ -46,6 +46,7 @@ Pydantic models `ChatRequest`, `Message` (text and image parts), `ToolDef`, `Cha
 ```python
 class Provider(Protocol):
     name: str
+
     async def chat(self, req: ChatRequest, model_id: str) -> ChatResponse: ...
     def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]: ...
 ```
