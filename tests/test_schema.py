@@ -6,9 +6,12 @@ from tierwise.schema import (
     ChatResponse,
     FunctionCall,
     ImagePart,
+    StreamChunk,
     TextPart,
     ToolCall,
+    ToolCallDelta,
     Usage,
+    chunk_to_openai,
 )
 
 
@@ -87,3 +90,35 @@ def test_to_openai_tool_calls() -> None:
     assert message["tool_calls"] == [
         {"id": "c1", "type": "function", "function": {"name": "f", "arguments": '{"q": "x"}'}}
     ]
+
+
+def test_chunk_to_openai_content() -> None:
+    out = chunk_to_openai(StreamChunk(content="hi"), id="c1", model="m", created=1)
+    assert out["object"] == "chat.completion.chunk"
+    assert out["choices"][0]["delta"] == {"content": "hi"}
+    assert out["choices"][0]["finish_reason"] is None
+    assert "usage" not in out
+
+
+def test_chunk_to_openai_tool_delta() -> None:
+    first = StreamChunk(tool_calls=[ToolCallDelta(index=0, id="t1", name="f")])
+    later = StreamChunk(tool_calls=[ToolCallDelta(index=0, arguments='{"q"')])
+    first_delta = chunk_to_openai(first, id="c", model="m", created=1)["choices"][0]["delta"]
+    later_delta = chunk_to_openai(later, id="c", model="m", created=1)["choices"][0]["delta"]
+    assert first_delta["tool_calls"] == [
+        {"index": 0, "id": "t1", "type": "function", "function": {"name": "f", "arguments": ""}}
+    ]
+    assert later_delta["tool_calls"] == [{"index": 0, "function": {"arguments": '{"q"'}}]
+
+
+def test_chunk_to_openai_finish() -> None:
+    out = chunk_to_openai(StreamChunk(finish_reason="stop"), id="c", model="m", created=1)
+    assert out["choices"][0] == {"index": 0, "delta": {}, "finish_reason": "stop"}
+
+
+def test_chunk_to_openai_usage_only() -> None:
+    usage = Usage(input_tokens=7, output_tokens=2, cached_input_tokens=3)
+    out = chunk_to_openai(StreamChunk(usage=usage), id="c", model="m", created=1)
+    assert out["choices"] == []
+    assert out["usage"]["prompt_tokens"] == 7
+    assert out["usage"]["prompt_tokens_details"] == {"cached_tokens": 3}

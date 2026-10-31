@@ -1,11 +1,12 @@
 """Shared provider plumbing: the adapter protocol, typed errors and the HTTP send helper."""
 
-from collections.abc import Callable
+import json
+from collections.abc import AsyncGenerator, Callable
 from typing import Any, Protocol
 
 import httpx
 
-from tierwise.schema import ChatRequest, ChatResponse
+from tierwise.schema import ChatRequest, ChatResponse, StreamChunk
 
 MAX_ERROR_CHARS = 500
 
@@ -35,6 +36,8 @@ class Provider(Protocol):
 
     async def chat(self, req: ChatRequest, model_id: str) -> ChatResponse: ...
 
+    def stream(self, req: ChatRequest, model_id: str) -> AsyncGenerator[StreamChunk, None]: ...
+
 
 def classify_http_error(provider: str, status: int, body: str) -> ProviderError:
     """Map a non-2xx upstream response to the error type that decides what happens next."""
@@ -51,7 +54,7 @@ async def send(
 ) -> dict[str, Any]:
     try:
         response = await client.request(method, url, **kw)
-    except httpx.TransportError as exc:  # timeouts, refused or dropped connections
+    except httpx.HTTPError as exc:  # timeouts, dropped connections, undecodable bodies
         raise RetryableError(provider, None, type(exc).__name__) from exc
     if not response.is_success:
         raise classify_http_error(provider, response.status_code, response.text)
@@ -64,12 +67,50 @@ async def send(
     return data
 
 
+def parse_tool_arguments(provider: str, arguments: str, where: str) -> dict[str, Any]:
+    """Decode an OpenAI tool call's JSON arguments; anything but an object is a bad request."""
+    try:
+        value = json.loads(arguments or "{}")
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise FatalError(provider, 400, f"{where}.function.arguments must be a JSON object")
+    return value
+
+
 def parse_or_retry[T](
     provider: str, data: dict[str, Any], parse: Callable[[dict[str, Any]], T]
 ) -> T:
     """Run a response parser; a 2xx body we cannot understand is treated as a transient failure."""
     try:
         return parse(data)
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         message = f"malformed response: {exc!r}"[:MAX_ERROR_CHARS]
         raise RetryableError(provider, 200, message) from exc
+
+
+async def stream_sse(
+    client: httpx.AsyncClient, provider: str, method: str, url: str, **kw: Any
+) -> AsyncGenerator[dict[str, Any], None]:
+    """Yield the JSON payload of each ``data:`` line of a server-sent event stream.
+
+    The upstream response is always closed, including when the consumer stops early.
+    """
+    try:
+        async with client.stream(method, url, **kw) as response:
+            if not response.is_success:
+                body = (await response.aread()).decode(errors="replace")
+                raise classify_http_error(provider, response.status_code, body)
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue  # blank separators, event: names, : comments
+                data = line.removeprefix("data:").strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    yield json.loads(data)
+                except ValueError as exc:
+                    message = f"malformed stream event: {data}"[:MAX_ERROR_CHARS]
+                    raise RetryableError(provider, response.status_code, message) from exc
+    except httpx.HTTPError as exc:
+        raise RetryableError(provider, None, type(exc).__name__) from exc

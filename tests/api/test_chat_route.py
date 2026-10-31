@@ -1,58 +1,9 @@
-from collections.abc import AsyncIterator, Callable
-from contextlib import asynccontextmanager
-from typing import Any
+from pathlib import Path
 
 import httpx
-from fastapi import FastAPI
+import pytest
 
-from tierwise.api.app import create_app
-from tierwise.config import Settings
-
-ANTHROPIC_KEY = "sk-ant-secret-123"
-OPENAI_KEY = "sk-oa-secret-456"
-Handler = Callable[[httpx.Request], httpx.Response]
-
-ANTHROPIC_REPLY = {
-    "id": "msg_1",
-    "model": "claude-haiku-5-5",
-    "content": [{"type": "text", "text": "pong"}],
-    "stop_reason": "end_turn",
-    "usage": {"input_tokens": 3, "output_tokens": 1},
-}
-OPENAI_REPLY = {
-    "id": "chatcmpl-1",
-    "model": "gpt-4.1-mini",
-    "created": 1,
-    "choices": [
-        {"index": 0, "message": {"role": "assistant", "content": "pong"}, "finish_reason": "stop"}
-    ],
-    "usage": {"prompt_tokens": 3, "completion_tokens": 1},
-}
-
-
-def ok_upstream(request: httpx.Request) -> httpx.Response:
-    if request.url.host == "api.anthropic.com":
-        return httpx.Response(200, json=ANTHROPIC_REPLY)
-    return httpx.Response(200, json=OPENAI_REPLY)
-
-
-@asynccontextmanager
-async def gateway(
-    handler: Handler = ok_upstream, **settings: Any
-) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
-    config = Settings(
-        _env_file=None,  # type: ignore[call-arg]
-        **{"anthropic_api_key": ANTHROPIC_KEY, "openai_api_key": OPENAI_KEY, **settings},
-    )
-    app = create_app(config, transport=httpx.MockTransport(handler))
-    async with app.router.lifespan_context(app):
-        transport = httpx.ASGITransport(app=app)
-        async with httpx.AsyncClient(transport=transport, base_url="http://gw") as client:
-            yield app, client
-
-
-def body(model: str, **extra: Any) -> dict[str, Any]:
-    return {"model": model, "messages": [{"role": "user", "content": "ping"}], **extra}
+from tests.api.helpers import ANTHROPIC_KEY, body, gateway
 
 
 async def test_routes_claude_to_anthropic() -> None:
@@ -68,32 +19,56 @@ async def test_routes_claude_to_anthropic() -> None:
     int(request_id, 16)
 
 
-async def test_routes_gpt_to_openai() -> None:
+@pytest.mark.parametrize(
+    ("model", "provider"),
+    [("gpt-4.1-mini", "openai"), ("gemini-x", "gemini"), ("ollama/llama3.2", "ollama")],
+)
+async def test_routes_by_registry(model: str, provider: str) -> None:
     async with gateway() as (_, client):
-        resp = await client.post("/v1/chat/completions", json=body("gpt-4.1-mini"))
+        resp = await client.post("/v1/chat/completions", json=body(model))
     assert resp.status_code == 200
-    assert resp.headers["X-Tierwise-Provider"] == "openai"
+    assert resp.headers["X-Tierwise-Provider"] == provider
+    assert resp.json()["choices"][0]["message"]["content"] == "pong"
 
 
-async def test_unknown_model_404() -> None:
+async def test_ollama_receives_upstream_model_name() -> None:
+    seen: list[str] = []
+
+    def capture(request: httpx.Request) -> httpx.Response:
+        seen.append(request.read().decode())
+        from tests.api.helpers import ok_upstream
+
+        return ok_upstream(request)
+
+    async with gateway(capture) as (_, client):
+        await client.post("/v1/chat/completions", json=body("ollama/llama3.2"))
+    assert '"model":"llama3.2"' in seen[0].replace(" ", "")
+
+
+async def test_cost_header_and_log_row(tmp_path: Path) -> None:
+    async with gateway(db_dir=tmp_path) as (app, client):
+        resp = await client.post("/v1/chat/completions", json=body("claude-haiku-5-5"))
+    assert resp.headers["X-Tierwise-Cost-USD"] == "0.000005"  # 3 in x $1 + 1 out x $2, per 1M
+    [row] = await app.state.log.fetch_all()
+    assert row.status == 200
+    assert row.stream is False
+    assert row.cost_usd == pytest.approx(5e-6)
+    assert row.baseline_cost_usd == pytest.approx(5e-6)
+    assert (row.tokens_in, row.tokens_out) == (3, 1)
+
+
+async def test_model_not_in_registry_404() -> None:
     async with gateway() as (_, client):
         resp = await client.post("/v1/chat/completions", json=body("mystery-model"))
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "model_not_found"
 
 
-async def test_unconfigured_provider_404() -> None:
+async def test_registry_model_provider_unconfigured_404() -> None:
     async with gateway(anthropic_api_key=None) as (_, client):
         resp = await client.post("/v1/chat/completions", json=body("claude-haiku-5-5"))
     assert resp.status_code == 404
     assert resp.json()["error"]["code"] == "model_not_found"
-
-
-async def test_stream_rejected_400() -> None:
-    async with gateway() as (_, client):
-        resp = await client.post("/v1/chat/completions", json=body("gpt-4.1-mini", stream=True))
-    assert resp.status_code == 400
-    assert resp.json()["error"]["code"] == "unsupported_parameter"
 
 
 async def test_bad_body_400_openai_shape() -> None:
@@ -113,6 +88,17 @@ async def test_upstream_timeout_503() -> None:
         resp = await client.post("/v1/chat/completions", json=body("gpt-4.1-mini"))
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == "upstream_unavailable"
+
+
+async def test_error_request_is_logged(tmp_path: Path) -> None:
+    def unavailable(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="down")
+
+    async with gateway(unavailable, db_dir=tmp_path) as (app, client):
+        await client.post("/v1/chat/completions", json=body("gpt-4.1-mini"))
+    [row] = await app.state.log.fetch_all()
+    assert (row.status, row.error_code) == (503, "upstream_unavailable")
+    assert row.cost_usd is None
 
 
 async def test_upstream_401_maps_502_without_key() -> None:
@@ -157,6 +143,19 @@ async def test_clients_are_pooled_singletons() -> None:
 
 
 async def test_healthz_lists_configured_providers() -> None:
-    async with gateway(openai_api_key=None) as (_, client):
+    async with gateway(openai_api_key=None, ollama_base_url=None) as (_, client):
         resp = await client.get("/healthz")
-    assert resp.json() == {"status": "ok", "providers": ["anthropic"]}
+    assert resp.json() == {"status": "ok", "providers": ["anthropic", "gemini"]}
+
+
+async def test_unexpected_provider_exception_is_500_shape_and_logged(tmp_path: Path) -> None:
+    async def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("bug in adapter")
+
+    async with gateway(db_dir=tmp_path) as (app, client):
+        app.state.providers["openai"].chat = explode
+        resp = await client.post("/v1/chat/completions", json=body("gpt-4.1-mini"))
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "internal_error"
+    [row] = await app.state.log.fetch_all()
+    assert (row.status, row.error_code) == (500, "internal_error")

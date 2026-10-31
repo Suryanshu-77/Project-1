@@ -6,8 +6,8 @@ import pytest
 import respx
 
 from tierwise.providers.anthropic import AnthropicProvider, from_anthropic, to_anthropic
-from tierwise.providers.base import FatalError
-from tierwise.schema import ChatRequest, Usage
+from tierwise.providers.base import FatalError, RetryableError
+from tierwise.schema import ChatRequest, StreamChunk, Usage
 
 MODEL = "claude-haiku-5-5"
 
@@ -198,3 +198,137 @@ async def test_chat_sends_headers() -> None:
     assert sent.headers["x-api-key"] == "sk-test"
     assert sent.headers["anthropic-version"] == "2023-06-01"
     assert resp.provider == "anthropic"
+
+
+MESSAGES_URL = "https://api.anthropic.com/v1/messages"
+
+
+def _events(*events: dict[str, Any]) -> bytes:
+    return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n" for e in events).encode()
+
+
+def _start(**usage: int) -> dict[str, Any]:
+    return {"type": "message_start", "message": {"id": "msg_1", "usage": usage}}
+
+
+async def _stream(body: bytes) -> list[StreamChunk]:
+    respx.post(MESSAGES_URL).respond(
+        200, content=body, headers={"content-type": "text/event-stream"}
+    )
+    async with httpx.AsyncClient() as client:
+        provider = AnthropicProvider(client, "sk")
+        return [c async for c in provider.stream(_req([{"role": "user", "content": "q"}]), MODEL)]
+
+
+@respx.mock
+async def test_stream_text_and_usage() -> None:
+    chunks = await _stream(
+        _events(
+            _start(input_tokens=10, cache_read_input_tokens=90, output_tokens=1),
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {"type": "ping"},
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "Hel"},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "lo"},
+            },
+            {"type": "content_block_stop", "index": 0},
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 7},
+            },
+            {"type": "message_stop"},
+        )
+    )
+    assert [c.content for c in chunks if c.content] == ["Hel", "lo"]
+    assert chunks[-2].finish_reason == "stop"
+    assert chunks[-1].usage == Usage(input_tokens=100, output_tokens=7, cached_input_tokens=90)
+
+
+@respx.mock
+async def test_stream_tool_use_blocks() -> None:
+    tool = {"type": "tool_use", "id": "toolu_1", "name": "search", "input": {}}
+    chunks = await _stream(
+        _events(
+            _start(input_tokens=5, output_tokens=1),
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {"type": "text", "text": ""},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "ok"},
+            },
+            {"type": "content_block_start", "index": 1, "content_block": tool},
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '{"q": '},
+            },
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {"type": "input_json_delta", "partial_json": '"x"}'},
+            },
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use"},
+                "usage": {"output_tokens": 9},
+            },
+            {"type": "message_stop"},
+        )
+    )
+    deltas = [d for c in chunks if c.tool_calls for d in c.tool_calls]
+    assert all(d.index == 0 for d in deltas)
+    assert (deltas[0].id, deltas[0].name) == ("toolu_1", "search")
+    assert json.loads("".join(d.arguments for d in deltas)) == {"q": "x"}
+    assert any(c.finish_reason == "tool_calls" for c in chunks)
+
+
+@respx.mock
+async def test_stream_overloaded_error_event_is_retryable() -> None:
+    error = {"type": "error", "error": {"type": "overloaded_error", "message": "Overloaded"}}
+    with pytest.raises(RetryableError):
+        await _stream(_events(_start(input_tokens=1, output_tokens=1), error))
+
+
+@respx.mock
+async def test_stream_other_error_event_is_fatal() -> None:
+    error = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}}
+    with pytest.raises(FatalError):
+        await _stream(_events(_start(input_tokens=1, output_tokens=1), error))
+
+
+@respx.mock
+async def test_stream_zero_argument_tool_emits_empty_object() -> None:
+    tool = {"type": "tool_use", "id": "toolu_1", "name": "get_time", "input": {}}
+    empty = {"type": "input_json_delta", "partial_json": ""}
+    stop = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "tool_use"},
+        "usage": {"output_tokens": 3},
+    }
+    chunks = await _stream(
+        _events(
+            _start(input_tokens=5, output_tokens=1),
+            {"type": "content_block_start", "index": 0, "content_block": tool},
+            {"type": "content_block_delta", "index": 0, "delta": empty},
+            {"type": "content_block_stop", "index": 0},
+            stop,
+            {"type": "message_stop"},
+        )
+    )
+    deltas = [d for c in chunks if c.tool_calls for d in c.tool_calls]
+    assert json.loads("".join(d.arguments for d in deltas)) == {}

@@ -10,5 +10,15 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     openai_api_key: str | None = None
     openai_base_url: str = "https://api.openai.com/v1"
+    gemini_api_key: str | None = None
+    ollama_base_url: str | None = None  # e.g. http://localhost:11434/v1; unset disables Ollama
+    registry_path: str = Field(
+        default="config/registry.yaml",
+        validation_alias=AliasChoices("TIERWISE_REGISTRY", "registry_path"),
+    )
+    db_url: str = Field(
+        default="sqlite+aiosqlite:///tierwise.db",
+        validation_alias=AliasChoices("TIERWISE_DB_URL", "db_url"),
+    )
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))
