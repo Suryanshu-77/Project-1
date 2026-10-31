@@ -1,12 +1,20 @@
 """OpenAI Chat Completions adapter; also serves any OpenAI-compatible host via ``base_url``."""
 
 import time
+from collections.abc import AsyncIterator
 from typing import Any, cast, get_args
 
 import httpx
 
 from tierwise.providers.base import parse_or_retry, send
-from tierwise.schema import ChatRequest, ChatResponse, FinishReason, ToolCall, Usage
+from tierwise.schema import (
+    ChatRequest,
+    ChatResponse,
+    FinishReason,
+    StreamChunk,
+    ToolCall,
+    Usage,
+)
 
 _FINISH_REASONS: frozenset[str] = frozenset(get_args(FinishReason))
 _REASONING_PREFIXES = ("o1", "o3", "o4")
@@ -65,3 +73,7 @@ class OpenAIProvider:
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
         return parse_or_retry(self.name, data, from_openai)
+
+    async def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]:
+        raise NotImplementedError
+        yield  # pragma: no cover - makes this an async generator

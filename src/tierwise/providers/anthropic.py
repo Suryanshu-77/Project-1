@@ -2,6 +2,7 @@
 
 import json
 import time
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
@@ -14,6 +15,7 @@ from tierwise.schema import (
     FinishReason,
     FunctionCall,
     Message,
+    StreamChunk,
     TextPart,
     ToolCall,
     Usage,
@@ -220,3 +222,7 @@ class AnthropicProvider:
             headers={"x-api-key": self._api_key, "anthropic-version": API_VERSION},
         )
         return parse_or_retry(self.name, data, from_anthropic)
+
+    async def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]:
+        raise NotImplementedError
+        yield  # pragma: no cover - makes this an async generator

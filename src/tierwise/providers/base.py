@@ -1,11 +1,12 @@
 """Shared provider plumbing: the adapter protocol, typed errors and the HTTP send helper."""
 
-from collections.abc import Callable
+import json
+from collections.abc import AsyncIterator, Callable
 from typing import Any, Protocol
 
 import httpx
 
-from tierwise.schema import ChatRequest, ChatResponse
+from tierwise.schema import ChatRequest, ChatResponse, StreamChunk
 
 MAX_ERROR_CHARS = 500
 
@@ -34,6 +35,8 @@ class Provider(Protocol):
     name: str
 
     async def chat(self, req: ChatRequest, model_id: str) -> ChatResponse: ...
+
+    def stream(self, req: ChatRequest, model_id: str) -> AsyncIterator[StreamChunk]: ...
 
 
 def classify_http_error(provider: str, status: int, body: str) -> ProviderError:
@@ -73,3 +76,30 @@ def parse_or_retry[T](
     except (KeyError, IndexError, TypeError, ValueError) as exc:
         message = f"malformed response: {exc!r}"[:MAX_ERROR_CHARS]
         raise RetryableError(provider, 200, message) from exc
+
+
+async def stream_sse(
+    client: httpx.AsyncClient, provider: str, method: str, url: str, **kw: Any
+) -> AsyncIterator[dict[str, Any]]:
+    """Yield the JSON payload of each ``data:`` line of a server-sent event stream.
+
+    The upstream response is always closed, including when the consumer stops early.
+    """
+    try:
+        async with client.stream(method, url, **kw) as response:
+            if not response.is_success:
+                body = (await response.aread()).decode(errors="replace")
+                raise classify_http_error(provider, response.status_code, body)
+            async for line in response.aiter_lines():
+                if not line.startswith("data:"):
+                    continue  # blank separators, event: names, : comments
+                data = line.removeprefix("data:").strip()
+                if not data or data == "[DONE]":
+                    continue
+                try:
+                    yield json.loads(data)
+                except ValueError as exc:
+                    message = f"malformed stream event: {data}"[:MAX_ERROR_CHARS]
+                    raise RetryableError(provider, response.status_code, message) from exc
+    except httpx.TransportError as exc:
+        raise RetryableError(provider, None, type(exc).__name__) from exc

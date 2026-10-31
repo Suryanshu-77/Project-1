@@ -106,10 +106,61 @@ class ChatResponse(BaseModel):
             "created": self.created,
             "model": self.model,
             "choices": [{"index": 0, "message": message, "finish_reason": self.finish_reason}],
-            "usage": {
-                "prompt_tokens": self.usage.input_tokens,
-                "completion_tokens": self.usage.output_tokens,
-                "total_tokens": self.usage.input_tokens + self.usage.output_tokens,
-                "prompt_tokens_details": {"cached_tokens": self.usage.cached_input_tokens},
-            },
+            "usage": _usage_to_openai(self.usage),
         }
+
+
+class ToolCallDelta(BaseModel):
+    """A fragment of a streamed tool call. ``id``/``name`` arrive on the first fragment."""
+
+    index: int
+    id: str | None = None
+    name: str | None = None
+    arguments: str = ""
+
+
+class StreamChunk(BaseModel):
+    content: str | None = None
+    tool_calls: list[ToolCallDelta] | None = None
+    finish_reason: FinishReason | None = None
+    usage: Usage | None = None
+
+
+def _usage_to_openai(usage: Usage) -> dict[str, Any]:
+    return {
+        "prompt_tokens": usage.input_tokens,
+        "completion_tokens": usage.output_tokens,
+        "total_tokens": usage.input_tokens + usage.output_tokens,
+        "prompt_tokens_details": {"cached_tokens": usage.cached_input_tokens},
+    }
+
+
+def _tool_delta_to_openai(delta: ToolCallDelta) -> dict[str, Any]:
+    function: dict[str, Any] = {"arguments": delta.arguments}
+    out: dict[str, Any] = {"index": delta.index}
+    if delta.id is not None:
+        out["id"] = delta.id
+        out["type"] = "function"
+    if delta.name is not None:
+        function = {"name": delta.name, **function}
+    out["function"] = function
+    return out
+
+
+def chunk_to_openai(chunk: StreamChunk, *, id: str, model: str, created: int) -> dict[str, Any]:
+    """Serialize one normalized chunk as an OpenAI ``chat.completion.chunk``."""
+    base: dict[str, Any] = {
+        "id": id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+    }
+    if chunk.usage is not None:
+        return {**base, "choices": [], "usage": _usage_to_openai(chunk.usage)}
+    delta: dict[str, Any] = {}
+    if chunk.content is not None:
+        delta["content"] = chunk.content
+    if chunk.tool_calls:
+        delta["tool_calls"] = [_tool_delta_to_openai(d) for d in chunk.tool_calls]
+    choice = {"index": 0, "delta": delta, "finish_reason": chunk.finish_reason}
+    return {**base, "choices": [choice]}
