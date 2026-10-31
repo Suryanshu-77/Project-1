@@ -1,5 +1,6 @@
 """Shared provider plumbing: the adapter protocol, typed errors and the HTTP send helper."""
 
+from collections.abc import Callable
 from typing import Any, Protocol
 
 import httpx
@@ -50,9 +51,25 @@ async def send(
 ) -> dict[str, Any]:
     try:
         response = await client.request(method, url, **kw)
-    except (httpx.TimeoutException, httpx.ConnectError) as exc:  # PoolTimeout is a TimeoutException
+    except httpx.TransportError as exc:  # timeouts, refused or dropped connections
         raise RetryableError(provider, None, type(exc).__name__) from exc
-    if response.is_success:
+    if not response.is_success:
+        raise classify_http_error(provider, response.status_code, response.text)
+    try:
         data: dict[str, Any] = response.json()
-        return data
-    raise classify_http_error(provider, response.status_code, response.text)
+    except ValueError as exc:  # e.g. a captive-proxy HTML page served with 200
+        raise RetryableError(
+            provider, response.status_code, response.text[:MAX_ERROR_CHARS]
+        ) from exc
+    return data
+
+
+def parse_or_retry[T](
+    provider: str, data: dict[str, Any], parse: Callable[[dict[str, Any]], T]
+) -> T:
+    """Run a response parser; a 2xx body we cannot understand is treated as a transient failure."""
+    try:
+        return parse(data)
+    except (KeyError, IndexError, TypeError, ValueError) as exc:
+        message = f"malformed response: {exc!r}"[:MAX_ERROR_CHARS]
+        raise RetryableError(provider, 200, message) from exc

@@ -1,8 +1,10 @@
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
+from tierwise.providers.base import RetryableError
 from tierwise.providers.openai import OpenAIProvider, from_openai, to_openai_request
 from tierwise.schema import ChatRequest, Usage
 
@@ -56,6 +58,29 @@ def test_from_openai_tool_calls() -> None:
 def test_unknown_finish_reason_becomes_stop() -> None:
     resp = from_openai(_reply({"role": "assistant", "content": "a"}, "function_call"))
     assert resp.finish_reason == "stop"
+
+
+def test_max_completion_tokens_forwarded() -> None:
+    body = to_openai_request(_req(max_completion_tokens=200), MODEL)
+    assert body["max_completion_tokens"] == 200
+
+
+def test_o_series_max_tokens_renamed() -> None:
+    body = to_openai_request(_req(max_tokens=50), "o3-mini")
+    assert body["max_completion_tokens"] == 50
+    assert "max_tokens" not in body
+
+
+def test_gpt_max_tokens_kept() -> None:
+    assert to_openai_request(_req(max_tokens=50), MODEL)["max_tokens"] == 50
+
+
+@respx.mock
+async def test_malformed_2xx_body_is_retryable() -> None:
+    respx.post("https://api.openai.com/v1/chat/completions").respond(200, json={"choices": []})
+    async with httpx.AsyncClient() as client:
+        with pytest.raises(RetryableError):
+            await OpenAIProvider(client, "sk-o").chat(_req(), MODEL)
 
 
 @respx.mock

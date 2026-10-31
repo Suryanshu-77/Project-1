@@ -2,9 +2,11 @@ import json
 from typing import Any
 
 import httpx
+import pytest
 import respx
 
 from tierwise.providers.anthropic import AnthropicProvider, from_anthropic, to_anthropic
+from tierwise.providers.base import FatalError
 from tierwise.schema import ChatRequest, Usage
 
 MODEL = "claude-haiku-5-5"
@@ -74,7 +76,64 @@ def test_tool_round_trip_request() -> None:
     assert tool_reply["role"] == "user"
     assert tool_reply["content"][0]["type"] == "tool_result"
     assert tool_reply["content"][0]["tool_use_id"] == "call_1"
-    assert body["tools"] == [{"name": "search", "input_schema": {}}]
+    assert body["tools"] == [
+        {"name": "search", "input_schema": {"type": "object", "properties": {}}}
+    ]
+
+
+def _tool_history(arguments: str) -> ChatRequest:
+    call = {"id": "c1", "type": "function", "function": {"name": "f", "arguments": arguments}}
+    return _req(
+        [
+            {"role": "user", "content": "go"},
+            {"role": "assistant", "content": None, "tool_calls": [call]},
+        ]
+    )
+
+
+@pytest.mark.parametrize("arguments", ['{"q": "x"', "[]", "null"])
+def test_bad_tool_arguments_are_fatal_400(arguments: str) -> None:
+    with pytest.raises(FatalError) as info:
+        to_anthropic(_tool_history(arguments), MODEL)
+    assert info.value.status == 400
+    assert "messages[1]" in info.value.message
+
+
+def test_no_parameter_tool_gets_object_schema() -> None:
+    body = to_anthropic(
+        _req(
+            [{"role": "user", "content": "time?"}],
+            tools=[{"type": "function", "function": {"name": "get_time"}}],
+        ),
+        MODEL,
+    )
+    assert body["tools"][0]["input_schema"] == {"type": "object", "properties": {}}
+
+
+@pytest.mark.parametrize(
+    ("choice", "expected"),
+    [
+        ("auto", {"type": "auto"}),
+        ("required", {"type": "any"}),
+        ("none", {"type": "none"}),
+        ({"type": "function", "function": {"name": "f"}}, {"type": "tool", "name": "f"}),
+    ],
+)
+def test_tool_choice_mapped(choice: Any, expected: dict[str, Any]) -> None:
+    body = to_anthropic(
+        _req(
+            [{"role": "user", "content": "q"}],
+            tools=[{"type": "function", "function": {"name": "f"}}],
+            tool_choice=choice,
+        ),
+        MODEL,
+    )
+    assert body["tool_choice"] == expected
+
+
+def test_max_completion_tokens_used() -> None:
+    req = _req([{"role": "user", "content": "q"}], max_completion_tokens=200)
+    assert to_anthropic(req, MODEL)["max_tokens"] == 200
 
 
 def test_image_data_url_and_https() -> None:

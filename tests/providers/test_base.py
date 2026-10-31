@@ -60,6 +60,21 @@ async def test_non_json_error_body_truncated() -> None:
 
 
 @respx.mock
+async def test_2xx_non_json_body_is_retryable() -> None:
+    respx.post(URL).respond(200, text="<html>captive portal" + "x" * 2000)
+    with pytest.raises(RetryableError) as info:
+        await _call()
+    assert len(info.value.message) <= 500
+
+
+@respx.mock
+async def test_dropped_connection_is_retryable() -> None:
+    respx.post(URL).mock(side_effect=httpx.RemoteProtocolError("peer closed connection"))
+    with pytest.raises(RetryableError):
+        await _call()
+
+
+@respx.mock
 async def test_2xx_returns_json() -> None:
     respx.post(URL).respond(200, json={"ok": True})
     assert await _call() == {"ok": True}

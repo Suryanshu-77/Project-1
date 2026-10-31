@@ -136,6 +136,16 @@ async def test_upstream_400_passes_status_and_message() -> None:
     assert "max_tokens too large" in resp.json()["error"]["message"]
 
 
+async def test_malformed_upstream_2xx_is_503_not_500() -> None:
+    def empty(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": []})
+
+    async with gateway(empty) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=body("gpt-4.1-mini"))
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "upstream_unavailable"
+
+
 async def test_clients_are_pooled_singletons() -> None:
     async with gateway() as (app, client):
         before = app.state.clients["openai"]

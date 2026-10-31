@@ -6,7 +6,7 @@ from typing import Any
 
 import httpx
 
-from tierwise.providers.base import send
+from tierwise.providers.base import FatalError, parse_or_retry, send
 from tierwise.schema import (
     ChatRequest,
     ChatResponse,
@@ -62,7 +62,34 @@ def _text_of(content: str | list[ContentPart] | None) -> str:
     return "".join(part.text for part in content if isinstance(part, TextPart))
 
 
-def _convert_message(msg: Message) -> dict[str, Any]:
+def _tool_input(arguments: str, where: str) -> dict[str, Any]:
+    try:
+        value = json.loads(arguments or "{}")
+    except ValueError:
+        value = None
+    if not isinstance(value, dict):
+        raise FatalError("anthropic", 400, f"{where}.function.arguments must be a JSON object")
+    return value
+
+
+def _input_schema(parameters: dict[str, Any]) -> dict[str, Any]:
+    # Anthropic requires an object schema; OpenAI allows tools with no parameters at all.
+    return {"type": "object", "properties": {}, **parameters}
+
+
+def _tool_choice(choice: Any) -> dict[str, Any] | None:
+    if choice == "auto":
+        return {"type": "auto"}
+    if choice == "required":
+        return {"type": "any"}
+    if choice == "none":
+        return {"type": "none"}
+    if isinstance(choice, dict) and isinstance(choice.get("function"), dict):
+        return {"type": "tool", "name": choice["function"]["name"]}
+    return None
+
+
+def _convert_message(msg: Message, index: int) -> dict[str, Any]:
     if msg.role == "tool":
         result = {
             "type": "tool_result",
@@ -77,9 +104,11 @@ def _convert_message(msg: Message) -> dict[str, Any]:
                 "type": "tool_use",
                 "id": call.id,
                 "name": call.function.name,
-                "input": json.loads(call.function.arguments or "{}"),
+                "input": _tool_input(
+                    call.function.arguments, f"messages[{index}].tool_calls[{position}]"
+                ),
             }
-            for call in msg.tool_calls
+            for position, call in enumerate(msg.tool_calls)
         ]
         return {"role": "assistant", "content": blocks}
     if isinstance(msg.content, str):
@@ -99,11 +128,11 @@ def _is_tool_results(message: dict[str, Any]) -> bool:
 def to_anthropic(req: ChatRequest, model_id: str) -> dict[str, Any]:
     system_parts: list[str] = []
     messages: list[dict[str, Any]] = []
-    for msg in req.messages:
+    for index, msg in enumerate(req.messages):
         if msg.role in ("system", "developer"):
             system_parts.append(_text_of(msg.content))
             continue
-        converted = _convert_message(msg)
+        converted = _convert_message(msg, index)
         # Parallel tool results must share one user turn.
         if msg.role == "tool" and messages and _is_tool_results(messages[-1]):
             messages[-1]["content"].extend(converted["content"])
@@ -113,7 +142,7 @@ def to_anthropic(req: ChatRequest, model_id: str) -> dict[str, Any]:
     body: dict[str, Any] = {
         "model": model_id,
         "messages": messages,
-        "max_tokens": req.max_tokens or DEFAULT_MAX_TOKENS,
+        "max_tokens": req.max_completion_tokens or req.max_tokens or DEFAULT_MAX_TOKENS,
     }
     if system_parts:
         body["system"] = "\n\n".join(system_parts)
@@ -128,10 +157,13 @@ def to_anthropic(req: ChatRequest, model_id: str) -> dict[str, Any]:
             {
                 "name": tool.function.name,
                 **({"description": tool.function.description} if tool.function.description else {}),
-                "input_schema": tool.function.parameters,
+                "input_schema": _input_schema(tool.function.parameters),
             }
             for tool in req.tools
         ]
+        tool_choice = _tool_choice(req.tool_choice)
+        if tool_choice is not None:
+            body["tool_choice"] = tool_choice
     return body
 
 
@@ -187,4 +219,4 @@ class AnthropicProvider:
             json=to_anthropic(req, model_id),
             headers={"x-api-key": self._api_key, "anthropic-version": API_VERSION},
         )
-        return from_anthropic(data)
+        return parse_or_retry(self.name, data, from_anthropic)

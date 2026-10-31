@@ -66,6 +66,7 @@ class ChatRequest(BaseModel):
     temperature: float | None = None
     top_p: float | None = None
     max_tokens: int | None = None
+    max_completion_tokens: int | None = None  # newer OpenAI name for the output cap
     stop: str | list[str] | None = None
     stream: bool = False
     tools: list[ToolDef] | None = None

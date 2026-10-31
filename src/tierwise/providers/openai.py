@@ -5,15 +5,20 @@ from typing import Any, cast, get_args
 
 import httpx
 
-from tierwise.providers.base import send
+from tierwise.providers.base import parse_or_retry, send
 from tierwise.schema import ChatRequest, ChatResponse, FinishReason, ToolCall, Usage
 
 _FINISH_REASONS: frozenset[str] = frozenset(get_args(FinishReason))
+_REASONING_PREFIXES = ("o1", "o3", "o4")
 
 
 def to_openai_request(req: ChatRequest, model_id: str) -> dict[str, Any]:
     body = req.model_dump(exclude_none=True, exclude={"stream"})
     body["model"] = model_id
+    # Reasoning (o-series) models reject max_tokens; other OpenAI-compatible hosts may not
+    # know max_completion_tokens, so only rename where it is required.
+    if model_id.startswith(_REASONING_PREFIXES) and "max_tokens" in body:
+        body.setdefault("max_completion_tokens", body.pop("max_tokens"))
     return body
 
 
@@ -59,4 +64,4 @@ class OpenAIProvider:
             json=to_openai_request(req, model_id),
             headers={"Authorization": f"Bearer {self._api_key}"},
         )
-        return from_openai(data)
+        return parse_or_retry(self.name, data, from_openai)
