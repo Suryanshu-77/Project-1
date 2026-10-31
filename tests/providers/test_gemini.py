@@ -202,3 +202,20 @@ async def test_stream_text_then_finish_then_usage() -> None:
     assert [c.content for c in chunks if c.content] == ["Hel", "lo"]
     assert chunks[-2].finish_reason == "stop"
     assert chunks[-1].usage == Usage(input_tokens=5, output_tokens=2)
+
+
+def test_parallel_tool_results_share_one_turn() -> None:
+    calls = [_call("c1", "a", "{}"), _call("c2", "b", "{}")]
+    body = to_gemini(
+        _req(
+            [
+                {"role": "user", "content": "both"},
+                {"role": "assistant", "tool_calls": calls},
+                {"role": "tool", "tool_call_id": "c1", "content": "ra"},
+                {"role": "tool", "tool_call_id": "c2", "content": "rb"},
+            ]
+        )
+    )
+    assert len(body["contents"]) == 3
+    names = [p["functionResponse"]["name"] for p in body["contents"][2]["parts"]]
+    assert names == ["a", "b"]

@@ -96,7 +96,12 @@ def to_gemini(req: ChatRequest) -> dict[str, Any]:
                 message = f"messages[{index}].tool_call_id does not match an earlier tool call"
                 raise FatalError("gemini", 400, message)
             response = {"name": name, "response": {"content": _text_of(msg.content)}}
-            contents.append({"role": "user", "parts": [{"functionResponse": response}]})
+            part = {"functionResponse": response}
+            previous = contents[-1] if contents else None
+            if previous and all("functionResponse" in p for p in previous["parts"]):
+                previous["parts"].append(part)  # answers to one parallel call turn
+            else:
+                contents.append({"role": "user", "parts": [part]})
         elif msg.role == "assistant":
             parts = _parts(msg.content)
             for position, call in enumerate(msg.tool_calls or []):

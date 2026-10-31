@@ -146,3 +146,16 @@ async def test_healthz_lists_configured_providers() -> None:
     async with gateway(openai_api_key=None, ollama_base_url=None) as (_, client):
         resp = await client.get("/healthz")
     assert resp.json() == {"status": "ok", "providers": ["anthropic", "gemini"]}
+
+
+async def test_unexpected_provider_exception_is_500_shape_and_logged(tmp_path: Path) -> None:
+    async def explode(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("bug in adapter")
+
+    async with gateway(db_dir=tmp_path) as (app, client):
+        app.state.providers["openai"].chat = explode
+        resp = await client.post("/v1/chat/completions", json=body("gpt-4.1-mini"))
+    assert resp.status_code == 500
+    assert resp.json()["error"]["code"] == "internal_error"
+    [row] = await app.state.log.fetch_all()
+    assert (row.status, row.error_code) == (500, "internal_error")

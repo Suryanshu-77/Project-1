@@ -1,5 +1,6 @@
 """HTTP endpoints. The registry decides which provider serves a model; routing arrives in M3."""
 
+import logging
 import time
 import uuid
 
@@ -15,6 +16,7 @@ from tierwise.schema import ChatRequest, Usage
 from tierwise.store import RequestLog, RequestRecord
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class UnknownModel(GatewayError):
@@ -97,6 +99,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 request_id=recorder.request_id,
                 model=req.model,
                 headers=headers,
+                include_usage=bool((req.stream_options or {}).get("include_usage")),
                 on_done=recorder.done,
             )
         response = await provider.chat(req, spec.wire_id)
@@ -104,6 +107,12 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
         err = exc if isinstance(exc, GatewayError) else gateway_error_from(exc)
         recorder.done(None, err.status, err.code)
         raise err from exc
+    except Exception as exc:
+        # A bug, not an upstream condition: log it, but still answer in OpenAI's shape.
+        logger.exception("unexpected error handling %s", recorder.request_id)
+        recorder.done(None, 500, "internal_error")
+        message = "Internal gateway error."
+        raise GatewayError(500, "internal_error", message, "api_error") from exc
     cost, _ = recorder.costs(response.usage)
     recorder.done(response.usage, 200, None)
     if cost is not None:

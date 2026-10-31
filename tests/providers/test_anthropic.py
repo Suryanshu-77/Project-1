@@ -309,3 +309,26 @@ async def test_stream_other_error_event_is_fatal() -> None:
     error = {"type": "error", "error": {"type": "invalid_request_error", "message": "bad"}}
     with pytest.raises(FatalError):
         await _stream(_events(_start(input_tokens=1, output_tokens=1), error))
+
+
+@respx.mock
+async def test_stream_zero_argument_tool_emits_empty_object() -> None:
+    tool = {"type": "tool_use", "id": "toolu_1", "name": "get_time", "input": {}}
+    empty = {"type": "input_json_delta", "partial_json": ""}
+    stop = {
+        "type": "message_delta",
+        "delta": {"stop_reason": "tool_use"},
+        "usage": {"output_tokens": 3},
+    }
+    chunks = await _stream(
+        _events(
+            _start(input_tokens=5, output_tokens=1),
+            {"type": "content_block_start", "index": 0, "content_block": tool},
+            {"type": "content_block_delta", "index": 0, "delta": empty},
+            {"type": "content_block_stop", "index": 0},
+            stop,
+            {"type": "message_stop"},
+        )
+    )
+    deltas = [d for c in chunks if c.tool_calls for d in c.tool_calls]
+    assert json.loads("".join(d.arguments for d in deltas)) == {}

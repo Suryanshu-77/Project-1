@@ -170,3 +170,8 @@ async def test_stream_tool_call_fragments() -> None:
     assert (deltas[0].id, deltas[0].name) == ("t1", "f")
     assert json.loads("".join(d.arguments for d in deltas)) == {"q": "x"}
     assert chunks[-1].finish_reason == "tool_calls"
+
+
+def test_stream_options_not_sent_on_plain_requests() -> None:
+    body = to_openai_request(_req(stream_options={"include_usage": True}), MODEL)
+    assert "stream_options" not in body

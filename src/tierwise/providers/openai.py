@@ -7,7 +7,13 @@ from typing import Any, cast, get_args
 
 import httpx
 
-from tierwise.providers.base import parse_or_retry, send, stream_sse
+from tierwise.providers.base import (
+    MAX_ERROR_CHARS,
+    RetryableError,
+    parse_or_retry,
+    send,
+    stream_sse,
+)
 from tierwise.schema import (
     ChatRequest,
     ChatResponse,
@@ -23,7 +29,7 @@ _REASONING_PREFIXES = ("o1", "o3", "o4")
 
 
 def to_openai_request(req: ChatRequest, model_id: str) -> dict[str, Any]:
-    body = req.model_dump(exclude_none=True, exclude={"stream"})
+    body = req.model_dump(exclude_none=True, exclude={"stream", "stream_options"})
     body["model"] = model_id
     # Reasoning (o-series) models reject max_tokens; other OpenAI-compatible hosts may not
     # know max_completion_tokens, so only rename where it is required.
@@ -61,8 +67,12 @@ def from_openai(data: dict[str, Any], provider: str = "openai") -> ChatResponse:
     )
 
 
-def chunks_from_event(event: dict[str, Any]) -> list[StreamChunk]:
+def chunks_from_event(event: dict[str, Any], provider: str = "openai") -> list[StreamChunk]:
     """Normalize one ``chat.completion.chunk`` (some hosts put usage on the last choice chunk)."""
+    if event.get("error"):
+        error = event["error"]
+        message = error.get("message", "") if isinstance(error, dict) else str(error)
+        raise RetryableError(provider, None, str(message)[:MAX_ERROR_CHARS])
     chunks: list[StreamChunk] = []
     for choice in event.get("choices") or []:
         delta = choice.get("delta") or {}
@@ -122,7 +132,9 @@ class OpenAIProvider:
         )
         async with aclosing(events):
             async for event in events:
-                for chunk in parse_or_retry(self.name, event, chunks_from_event):
+                for chunk in parse_or_retry(
+                    self.name, event, lambda e: chunks_from_event(e, self.name)
+                ):
                     yield chunk
 
     def _headers(self) -> dict[str, str]:

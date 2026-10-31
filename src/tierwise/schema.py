@@ -69,6 +69,7 @@ class ChatRequest(BaseModel):
     max_completion_tokens: int | None = None  # newer OpenAI name for the output cap
     stop: str | list[str] | None = None
     stream: bool = False
+    stream_options: dict[str, Any] | None = None
     tools: list[ToolDef] | None = None
     tool_choice: Any = None
     response_format: dict[str, Any] | None = None

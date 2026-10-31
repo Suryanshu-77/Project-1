@@ -54,7 +54,7 @@ async def send(
 ) -> dict[str, Any]:
     try:
         response = await client.request(method, url, **kw)
-    except httpx.TransportError as exc:  # timeouts, refused or dropped connections
+    except httpx.HTTPError as exc:  # timeouts, dropped connections, undecodable bodies
         raise RetryableError(provider, None, type(exc).__name__) from exc
     if not response.is_success:
         raise classify_http_error(provider, response.status_code, response.text)
@@ -84,7 +84,7 @@ def parse_or_retry[T](
     """Run a response parser; a 2xx body we cannot understand is treated as a transient failure."""
     try:
         return parse(data)
-    except (KeyError, IndexError, TypeError, ValueError) as exc:
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError) as exc:
         message = f"malformed response: {exc!r}"[:MAX_ERROR_CHARS]
         raise RetryableError(provider, 200, message) from exc
 
@@ -112,5 +112,5 @@ async def stream_sse(
                 except ValueError as exc:
                     message = f"malformed stream event: {data}"[:MAX_ERROR_CHARS]
                     raise RetryableError(provider, response.status_code, message) from exc
-    except httpx.TransportError as exc:
+    except httpx.HTTPError as exc:
         raise RetryableError(provider, None, type(exc).__name__) from exc

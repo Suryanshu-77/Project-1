@@ -214,6 +214,7 @@ class _StreamState:
         self.usage: dict[str, Any] = {}
         self.finish: FinishReason = "stop"
         self.tool_index: dict[int, int] = {}  # Anthropic block index -> tool ordinal
+        self.tool_has_args: set[int] = set()  # block indexes that streamed any arguments
 
     def handle(self, event: dict[str, Any]) -> list[StreamChunk]:
         kind = event.get("type")
@@ -230,8 +231,16 @@ class _StreamState:
                 return [StreamChunk(content=delta["text"])]
             if delta["type"] == "input_json_delta":
                 ordinal = self.tool_index[event["index"]]
+                if delta["partial_json"]:
+                    self.tool_has_args.add(event["index"])
                 fragment = ToolCallDelta(index=ordinal, arguments=delta["partial_json"])
                 return [StreamChunk(tool_calls=[fragment])]
+        elif kind == "content_block_stop":
+            index = event["index"]
+            if index in self.tool_index and index not in self.tool_has_args:
+                # A tool called with no arguments streams no JSON; clients expect "{}".
+                empty = ToolCallDelta(index=self.tool_index[index], arguments="{}")
+                return [StreamChunk(tool_calls=[empty])]
         elif kind == "message_delta":
             self.finish = _STOP_REASONS.get(event["delta"].get("stop_reason") or "", "stop")
             self.usage.update(event.get("usage") or {})

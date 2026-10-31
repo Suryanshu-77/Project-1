@@ -2,7 +2,14 @@ import httpx
 import pytest
 import respx
 
-from tierwise.providers.base import AuthError, FatalError, RetryableError, send, stream_sse
+from tierwise.providers.base import (
+    AuthError,
+    FatalError,
+    RetryableError,
+    parse_or_retry,
+    send,
+    stream_sse,
+)
 
 URL = "https://up.test/x"
 
@@ -127,3 +134,18 @@ async def test_sse_early_exit_closes_response() -> None:
     route = respx.post(URL).respond(200, content=body, headers=SSE_HEADERS)
     assert await _collect(limit=1) == [{"a": 1}]
     assert route.calls.last.response.is_closed
+
+
+def test_parse_or_retry_attribute_error_is_retryable() -> None:
+    def parse(data: dict[str, object]) -> object:
+        return data["choices"][0].get("delta")  # type: ignore[index]
+
+    with pytest.raises(RetryableError):
+        parse_or_retry("up", {"choices": ["x"]}, parse)
+
+
+@respx.mock
+async def test_decoding_error_is_retryable() -> None:
+    respx.post(URL).mock(side_effect=httpx.DecodingError("bad gzip"))
+    with pytest.raises(RetryableError):
+        await _call()
