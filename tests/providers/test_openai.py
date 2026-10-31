@@ -1,3 +1,4 @@
+import json
 from typing import Any
 
 import httpx
@@ -6,7 +7,7 @@ import respx
 
 from tierwise.providers.base import RetryableError
 from tierwise.providers.openai import OpenAIProvider, from_openai, to_openai_request
-from tierwise.schema import ChatRequest, Usage
+from tierwise.schema import ChatRequest, StreamChunk, Usage
 
 MODEL = "gpt-4.1-mini"
 
@@ -93,3 +94,79 @@ async def test_custom_base_url_used() -> None:
         resp = await provider.chat(_req(), MODEL)
     assert route.calls.last.request.headers["authorization"] == "Bearer sk-o"
     assert resp.content == "a"
+
+
+SSE = {"content-type": "text/event-stream"}
+COMPLETIONS = "https://api.openai.com/v1/chat/completions"
+
+
+def _sse(*events: dict[str, Any]) -> bytes:
+    lines = [f"data: {json.dumps(event)}\n\n" for event in events]
+    return ("".join(lines) + "data: [DONE]\n\n").encode()
+
+
+def _chunk(delta: dict[str, Any], finish: str | None = None) -> dict[str, Any]:
+    return {
+        "id": "c",
+        "object": "chat.completion.chunk",
+        "model": MODEL,
+        "created": 1,
+        "choices": [{"index": 0, "delta": delta, "finish_reason": finish}],
+    }
+
+
+async def _drain(provider: OpenAIProvider) -> list[StreamChunk]:
+    return [chunk async for chunk in provider.stream(_req(), MODEL)]
+
+
+@respx.mock
+async def test_stream_text_then_usage() -> None:
+    usage = {
+        "id": "c",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 2,
+            "prompt_tokens_details": {"cached_tokens": 4},
+        },
+    }
+    body = _sse(
+        _chunk({"role": "assistant", "content": "Hel"}),
+        _chunk({"content": "lo"}),
+        _chunk({}, "stop"),
+        usage,
+    )
+    respx.post(COMPLETIONS).respond(200, content=body, headers=SSE)
+    async with httpx.AsyncClient() as client:
+        chunks = await _drain(OpenAIProvider(client, "sk"))
+    assert [c.content for c in chunks if c.content] == ["Hel", "lo"]
+    assert [c.finish_reason for c in chunks if c.finish_reason] == ["stop"]
+    assert chunks[-1].usage == Usage(input_tokens=10, output_tokens=2, cached_input_tokens=4)
+
+
+@respx.mock
+async def test_stream_request_sets_include_usage() -> None:
+    route = respx.post(COMPLETIONS).respond(200, content=_sse(), headers=SSE)
+    async with httpx.AsyncClient() as client:
+        await _drain(OpenAIProvider(client, "sk"))
+    sent = json.loads(route.calls.last.request.content)
+    assert sent["stream"] is True
+    assert sent["stream_options"] == {"include_usage": True}
+
+
+@respx.mock
+async def test_stream_tool_call_fragments() -> None:
+    first = {"index": 0, "id": "t1", "type": "function", "function": {"name": "f", "arguments": ""}}
+    body = _sse(
+        _chunk({"tool_calls": [first]}),
+        _chunk({"tool_calls": [{"index": 0, "function": {"arguments": '{"q": '}}]}),
+        _chunk({"tool_calls": [{"index": 0, "function": {"arguments": '"x"}'}}]}),
+        _chunk({}, "tool_calls"),
+    )
+    respx.post(COMPLETIONS).respond(200, content=body, headers=SSE)
+    async with httpx.AsyncClient() as client:
+        chunks = await _drain(OpenAIProvider(client, "sk"))
+    deltas = [d for c in chunks if c.tool_calls for d in c.tool_calls]
+    assert (deltas[0].id, deltas[0].name) == ("t1", "f")
+    assert json.loads("".join(d.arguments for d in deltas)) == {"q": "x"}
+    assert chunks[-1].finish_reason == "tool_calls"

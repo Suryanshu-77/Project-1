@@ -1,7 +1,7 @@
 """Shared provider plumbing: the adapter protocol, typed errors and the HTTP send helper."""
 
 import json
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncGenerator, AsyncIterator, Callable
 from typing import Any, Protocol
 
 import httpx
@@ -80,7 +80,7 @@ def parse_or_retry[T](
 
 async def stream_sse(
     client: httpx.AsyncClient, provider: str, method: str, url: str, **kw: Any
-) -> AsyncIterator[dict[str, Any]]:
+) -> AsyncGenerator[dict[str, Any], None]:
     """Yield the JSON payload of each ``data:`` line of a server-sent event stream.
 
     The upstream response is always closed, including when the consumer stops early.
