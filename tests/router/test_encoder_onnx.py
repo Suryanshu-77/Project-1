@@ -1,3 +1,4 @@
+import os
 from pathlib import Path
 
 import numpy as np
@@ -75,3 +76,16 @@ def test_batch_equals_single() -> None:
     np.testing.assert_allclose(together[0], encoder.embed([a])[0], atol=1e-5)
     np.testing.assert_allclose(together[1], encoder.embed([b])[0], atol=1e-5)
     assert encoder.dim == 384
+
+
+@needs_model
+def test_hugging_face_onnx_matches_ours() -> None:
+    """`tierwise fetch-model` serves HF's own ONNX export: it must embed like ours."""
+    hf = os.environ.get("TIERWISE_HF_ONNX")
+    if not hf or not Path(hf).exists():
+        pytest.skip("set TIERWISE_HF_ONNX to a file from `tierwise fetch-model`")
+    tokenizer = load_tokenizer(ROUTER_DIR / "tokenizer.json")
+    inputs = [build_inputs(tokenizer, _user(t)) for t in TEXTS]
+    ours, theirs = OnnxEncoder(MODEL).embed(inputs), OnnxEncoder(Path(hf)).embed(inputs)
+    cosines = (ours * theirs).sum(axis=1)
+    assert cosines.min() > 0.999, cosines
