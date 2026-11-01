@@ -22,7 +22,7 @@ BAR_STEP = 0.10  # upward bias when the router is unsure
 AFFINITY_SLACK = 1.10  # keep a warm incumbent if it costs at most 10% more
 REFERENCE_DIFFICULTY = 0.5  # registry effort shifts are measured at this difficulty
 
-Reason = Literal["override", "rules", "affinity", "fallback"]
+Reason = Literal["override", "rules", "learned", "affinity", "fallback"]
 
 
 class NoEligibleModel(Exception):
