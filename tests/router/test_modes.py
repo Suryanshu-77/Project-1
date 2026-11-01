@@ -86,3 +86,31 @@ def test_tag_in_multipart_text_part() -> None:
 def test_tag_only_message_raises_empty() -> None:
     with pytest.raises(EmptyAfterTag):
         extract_tag(_req([{"role": "user", "content": "  [critical]  "}]))
+
+
+def test_tag_inside_code_is_not_a_tag() -> None:
+    req = _req([{"role": "user", "content": "fix: flags[critical] = True"}])
+    cleaned, tag = extract_tag(req)
+    assert tag is None
+    assert cleaned.messages[0].content == "fix: flags[critical] = True"
+
+
+def test_tag_on_its_own_line_keeps_the_other_lines() -> None:
+    cleaned, tag = extract_tag(_req([{"role": "user", "content": "line one\n[easy]\nline two"}]))
+    assert tag == "easy"
+    text = cleaned.messages[0].content
+    assert isinstance(text, str)
+    assert "[easy]" not in text
+    assert text.splitlines()[0] == "line one" and text.splitlines()[-1] == "line two"
+
+
+def test_tag_only_text_part_is_dropped_from_multipart() -> None:
+    content = [
+        {"type": "text", "text": "[easy]"},
+        {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}},
+    ]
+    cleaned, tag = extract_tag(_req([{"role": "user", "content": content}]))
+    assert tag == "easy"
+    parts = cleaned.messages[0].content
+    assert isinstance(parts, list)
+    assert len(parts) == 1 and not isinstance(parts[0], TextPart)

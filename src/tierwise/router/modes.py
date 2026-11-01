@@ -20,7 +20,9 @@ VIRTUAL_MODELS: tuple[str, ...] = (
     "tier:flagship",
 )
 
-_TAG = re.compile(r"\s*\[(critical|easy)\]\s*", re.IGNORECASE)
+# A tag must stand alone (not part of code like flags[critical]); only spaces and tabs
+# around it are removed, so the surrounding lines are left intact.
+_TAG = re.compile(r"[ \t]*(?<!\S)\[(critical|easy)\](?!\S)[ \t]*", re.IGNORECASE)
 
 
 class UnknownRoutingValue(ValueError):
@@ -80,7 +82,11 @@ def extract_tag(req: ChatRequest) -> tuple[ChatRequest, Tag | None]:
         for part in message.content:
             if isinstance(part, TextPart):
                 part.text = _strip(part.text, found)
-        empty = all(isinstance(p, TextPart) and not p.text for p in message.content)
+        # An empty text block is rejected upstream, so drop parts the tag emptied.
+        message.content = [
+            p for p in message.content if not (isinstance(p, TextPart) and not p.text)
+        ]
+        empty = not message.content
     else:
         empty = False
     if not found:

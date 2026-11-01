@@ -70,3 +70,13 @@ def test_wire_id(tmp_path: Path) -> None:
     assert a is not None and a.wire_id == "a"
     assert b is not None and b.wire_id == "llama3.2"
     assert registry.get("nope") is None
+
+
+def test_shipped_registry_cache_ttls_match_real_caching() -> None:
+    # OpenAI and Gemini cache prompt prefixes automatically. Anthropic only caches when the
+    # request sets cache_control, which the gateway doesn't do yet, so it must not look warm.
+    for model in load_registry("config/registry.yaml").models:
+        if model.provider in ("openai", "gemini"):
+            assert model.cache_ttl_s, f"{model.id} caches automatically but has no TTL"
+        else:
+            assert model.cache_ttl_s is None, f"{model.id} would be treated as warm"

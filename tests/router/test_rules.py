@@ -105,3 +105,17 @@ def test_labeled_set_routes_sensibly() -> None:
 def test_no_hard_prompt_scores_easy() -> None:
     misroutes = [(p[:50], round(d, 2)) for p, label, d in _labeled() if label == "hard" and d < 0.4]
     assert not misroutes, f"hard prompts would go to the cheapest tier: {misroutes}"
+
+
+def test_long_casual_conversation_is_not_hard() -> None:
+    history: list[dict[str, Any]] = []
+    for i in range(15):
+        history.append({"role": "user", "content": f"message {i} " + "x" * 1000})
+        history.append({"role": "assistant", "content": "y" * 1000})
+    history.append({"role": "user", "content": "thanks!"})
+    assert score(extract_features(_req(history))) < 0.6
+
+
+def test_summarizing_a_long_document_is_not_hard() -> None:
+    document = "Summarize this report:\n" + "word " * 16_000
+    assert score(extract_features(_req([{"role": "user", "content": document}]))) < 0.6

@@ -22,6 +22,12 @@ WEIGHTS: dict[str, float] = {
 }
 
 
+# Length and conversation depth stop adding difficulty past these points, so a long but
+# casual chat (or a big pasted document) doesn't saturate the score.
+MAX_TOKEN_THOUSANDS = 4.0
+MAX_USER_TURNS = 5
+
+
 def _clamp(value: float) -> float:
     return max(0.0, min(1.0, value))
 
@@ -31,8 +37,8 @@ def score(features: Features) -> float:
     total = WEIGHTS["base"]
 
     # Scale continuous signals
-    total += (features.est_tokens / 1000.0) * WEIGHTS["per_1k_tokens"]
-    total += features.user_turns * WEIGHTS["per_user_turn"]
+    total += min(features.est_tokens / 1000.0, MAX_TOKEN_THOUSANDS) * WEIGHTS["per_1k_tokens"]
+    total += min(features.user_turns, MAX_USER_TURNS) * WEIGHTS["per_user_turn"]
 
     # Cap keyword hit counts at 2 to prevent domination
     total += min(features.code_blocks, 2) * WEIGHTS["code"]

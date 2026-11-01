@@ -213,3 +213,16 @@ async def test_models_lists_virtual_ids_first() -> None:
     ]  # fmt: skip
     assert all(m["owned_by"] == "tierwise" for m in data[:7])
     assert {m["id"] for m in data[7:]} == {"cheap-gpt", "mid-claude", "gem-pro", "top-claude"}
+
+
+async def test_stream_ending_in_error_records_no_affinity() -> None:
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if json.loads(request.read()).get("stream"):
+            return sse(openai_chunk({"content": "po"}), done=False, raw_tail=b"data: {broken\n\n")
+        return ok_upstream(request)
+
+    async with routed(handler=upstream) as (_, client):
+        broken = await client.post("/v1/chat/completions", json={**_turn1(), "stream": True})
+        follow_up = await client.post("/v1/chat/completions", json=_turn2())
+    assert '"error"' in broken.text  # stream ended with an in-band error (logged 502)
+    assert follow_up.headers["X-Tierwise-Reason"] == "rules"
