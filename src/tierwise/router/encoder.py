@@ -1,8 +1,10 @@
-"""Learned-router inputs: token-space truncation of a request into one BERT-style sequence."""
+"""Learned-router encoder: token-space truncation, then MiniLM on ONNX Runtime, pooled in numpy."""
 
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+import onnxruntime as ort
 from tokenizers import Tokenizer
 
 from tierwise.schema import ChatRequest
@@ -65,3 +67,47 @@ def build_inputs(
         attention_mask=[1] * len(input_ids),
         token_type_ids=[0] * len(input_ids),
     )
+
+
+def pad_batch(inputs: list[EncodedInput]) -> dict[str, np.ndarray]:
+    """Right-pad to the longest sequence; a single request runs unpadded."""
+    length = max(len(x.input_ids) for x in inputs)
+    batch = {
+        name: np.zeros((len(inputs), length), dtype=np.int64)
+        for name in ("input_ids", "attention_mask", "token_type_ids")
+    }
+    for row, x in enumerate(inputs):
+        n = len(x.input_ids)
+        batch["input_ids"][row, :n] = x.input_ids
+        batch["attention_mask"][row, :n] = x.attention_mask
+        batch["token_type_ids"][row, :n] = x.token_type_ids
+    return batch
+
+
+def pool(token_embeddings: np.ndarray, attention_mask: np.ndarray) -> np.ndarray:
+    """Mean over real tokens, then L2-normalize: the same as sentence-transformers' MiniLM."""
+    mask = attention_mask[..., None].astype(np.float32)
+    summed = (token_embeddings * mask).sum(axis=1)
+    mean = summed / np.clip(mask.sum(axis=1), 1e-9, None)
+    norms = np.clip(np.linalg.norm(mean, axis=1, keepdims=True), 1e-12, None)
+    pooled: np.ndarray = (mean / norms).astype(np.float32)
+    return pooled
+
+
+class OnnxEncoder:
+    """One InferenceSession for the app's life. `embed` blocks: call it off the event loop."""
+
+    def __init__(
+        self, model_path: Path, threads: int = 2, provider: str = "CPUExecutionProvider"
+    ) -> None:
+        options = ort.SessionOptions()
+        options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        options.intra_op_num_threads = threads
+        self._session = ort.InferenceSession(str(model_path), options, providers=[provider])
+        self._input_names = {i.name for i in self._session.get_inputs()}
+        self.dim = int(self.embed([EncodedInput([101, 102], [1, 1], [0, 0])]).shape[1])  # warm-up
+
+    def embed(self, inputs: list[EncodedInput]) -> np.ndarray:
+        feed = {k: v for k, v in pad_batch(inputs).items() if k in self._input_names}
+        (tokens,) = self._session.run(["last_hidden_state"], feed)
+        return pool(np.asarray(tokens), feed["attention_mask"])
