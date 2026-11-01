@@ -19,8 +19,11 @@ from sqlalchemy import (
     Table,
     event,
     insert,
+    inspect,
     select,
+    text,
 )
+from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 logger = logging.getLogger(__name__)
@@ -49,6 +52,8 @@ class RequestRecord:
     cache_hit: bool = False
     failover_count: int = 0
     error_code: str | None = None
+    effort: str | None = None
+    tokens_reasoning: int | None = None
 
 
 metadata = MetaData()
@@ -76,6 +81,8 @@ requests_table = Table(
     Column("cache_hit", Boolean, nullable=False),
     Column("failover_count", Integer, nullable=False),
     Column("error_code", String),
+    Column("effort", String),
+    Column("tokens_reasoning", Integer),
 )
 
 
@@ -85,6 +92,25 @@ def _sqlite_pragmas(dbapi_connection: Any, _: Any) -> None:
     cursor.execute("PRAGMA synchronous=NORMAL")
     cursor.execute("PRAGMA busy_timeout=5000")
     cursor.close()
+
+
+def _add_missing_columns(conn: Connection) -> list[str]:
+    """Bring an older ``requests`` table up to date by adding new nullable columns.
+
+    ``create_all`` never alters an existing table, so a database written by an earlier
+    version would otherwise reject every insert. Existing rows keep NULL in the new columns.
+    """
+    present = {column["name"] for column in inspect(conn).get_columns("requests")}
+    added = []
+    for column in requests_table.columns:
+        if column.name in present:
+            continue
+        if not column.nullable:
+            raise RuntimeError(f"cannot add required column '{column.name}' to existing table")
+        column_type = column.type.compile(dialect=conn.dialect)
+        conn.execute(text(f"ALTER TABLE requests ADD COLUMN {column.name} {column_type}"))
+        added.append(column.name)
+    return added
 
 
 class RequestLog:
@@ -103,6 +129,7 @@ class RequestLog:
         self._task: asyncio.Task[None] | None = None
         self._closing = False
         self.dropped = 0
+        self.added_columns: list[str] = []  # columns the last start() had to add
 
     async def start(self) -> None:
         self._engine = create_async_engine(self._db_url)
@@ -110,6 +137,7 @@ class RequestLog:
             event.listen(self._engine.sync_engine, "connect", _sqlite_pragmas)
         async with self._engine.begin() as conn:
             await conn.run_sync(metadata.create_all)
+            self.added_columns = await conn.run_sync(_add_missing_columns)
         self._closing = False
         self._task = asyncio.create_task(self._run(), name="tierwise-request-log")
 

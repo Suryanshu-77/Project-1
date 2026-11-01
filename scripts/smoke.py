@@ -76,8 +76,9 @@ def run_auto(client: openai.OpenAI) -> int:
             continue
         model = raw.headers.get("X-Tierwise-Model")
         reason = raw.headers.get("X-Tierwise-Reason")
+        effort = raw.headers.get("X-Tierwise-Effort")
         cost = raw.headers.get("X-Tierwise-Cost-USD")
-        print(f"OK   {prompt[:40]!r} -> {model} ({reason}), ${cost}")
+        print(f"OK   {prompt[:40]!r} -> {model} @ {effort} effort ({reason}), ${cost}")
     return 1 if failures else 0
 
 

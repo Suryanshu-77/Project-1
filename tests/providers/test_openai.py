@@ -175,3 +175,40 @@ async def test_stream_tool_call_fragments() -> None:
 def test_stream_options_not_sent_on_plain_requests() -> None:
     body = to_openai_request(_req(stream_options={"include_usage": True}), MODEL)
     assert "stream_options" not in body
+
+
+def test_openai_effort_forwarded() -> None:
+    body = to_openai_request(_req(reasoning_effort="minimal"), MODEL)
+    assert body["reasoning_effort"] == "minimal"
+    assert "reasoning_effort" not in to_openai_request(_req(), MODEL)
+
+
+def test_openai_usage_reasoning_tokens() -> None:
+    resp = from_openai(
+        _reply(
+            {"role": "assistant", "content": "a"},
+            completion_tokens_details={"reasoning_tokens": 7},
+        )
+    )
+    assert resp.usage.reasoning_tokens == 7
+    assert from_openai(_reply({"role": "assistant", "content": "a"})).usage.reasoning_tokens is None
+
+
+@respx.mock
+async def test_openai_stream_usage_reasoning_tokens() -> None:
+    usage = {
+        "id": "c",
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 9,
+            "completion_tokens_details": {"reasoning_tokens": 4},
+        },
+    }
+    respx.post(COMPLETIONS).respond(
+        200, content=_sse(_chunk({"content": "a"}, "stop"), usage), headers=SSE
+    )
+    async with httpx.AsyncClient() as client:
+        chunks = await _drain(OpenAIProvider(client, "sk"))
+    assert chunks[-1].usage is not None
+    assert chunks[-1].usage.reasoning_tokens == 4

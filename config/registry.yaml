@@ -7,6 +7,13 @@
 #
 # quality: uncalibrated until M5 (placeholder values, ordered by tier).
 #
+# efforts: reasoning-effort levels the model accepts (tierwise scale: minimal, low, medium,
+# high, xhigh, max). Each level shifts quality (0 at the provider default; -0.15 per scale
+# step below it, +0.03 per step above), measured at difficulty 0.5: tierwise scales the
+# penalties with each request's difficulty. Estimates thinking tokens. Uncalibrated until M5.
+# Level lists for OpenAI and Gemini come from third-party docs: VERIFY against the official
+# API references. effort_in_cache_key: true where changing effort invalidates the cache.
+#
 # cache_ttl_s marks models whose prompt cache conversation affinity can count on. OpenAI and
 # Gemini cache prompt prefixes automatically; Anthropic only caches when a request sets
 # cache_control, which the gateway doesn't do yet, so its models have no TTL.
@@ -25,6 +32,13 @@ models:
     caps: [tools, vision, json]
     quality: 0.60
     tier: basic
+    effort_in_cache_key: true
+    efforts:
+      default: medium
+      levels:
+        low: {quality: -0.15, thinking_tokens: 150}
+        medium: {quality: +0.00, thinking_tokens: 600}
+        high: {quality: +0.03, thinking_tokens: 2000}
 
   - id: claude-sonnet-5-5
     provider: anthropic
@@ -36,6 +50,13 @@ models:
     caps: [tools, vision, json]
     quality: 0.80
     tier: moderate
+    effort_in_cache_key: true
+    efforts:
+      default: high
+      levels:
+        low: {quality: -0.30, thinking_tokens: 150}
+        medium: {quality: -0.15, thinking_tokens: 600}
+        high: {quality: +0.00, thinking_tokens: 2000}
 
   - id: claude-opus-5-5
     provider: anthropic
@@ -47,6 +68,13 @@ models:
     caps: [tools, vision, json]
     quality: 0.95
     tier: flagship
+    effort_in_cache_key: true
+    efforts:
+      default: medium
+      levels:
+        low: {quality: -0.15, thinking_tokens: 150}
+        medium: {quality: +0.00, thinking_tokens: 600}
+        high: {quality: +0.03, thinking_tokens: 2000}
 
   # --- OpenAI (prompt caching is automatic; no write charge) ---
   - id: gpt-4.1-nano
@@ -70,6 +98,13 @@ models:
     caps: [tools, vision, json]
     quality: 0.80
     tier: moderate
+    efforts:
+      default: medium
+      levels:
+        minimal: {quality: -0.30, thinking_tokens: 50}
+        low: {quality: -0.15, thinking_tokens: 150}
+        medium: {quality: +0.00, thinking_tokens: 600}
+        high: {quality: +0.03, thinking_tokens: 2000}
 
   - id: gpt-5.5
     provider: openai
@@ -81,6 +116,13 @@ models:
     caps: [tools, vision, json]
     quality: 0.93
     tier: flagship
+    efforts:
+      default: medium
+      levels:
+        minimal: {quality: -0.30, thinking_tokens: 50}
+        low: {quality: -0.15, thinking_tokens: 150}
+        medium: {quality: +0.00, thinking_tokens: 600}
+        high: {quality: +0.03, thinking_tokens: 2000}
 
   # --- Google Gemini (implicit caching; no write charge) ---
   - id: gemini-3-flash
@@ -93,6 +135,13 @@ models:
     caps: [tools, vision, json]
     quality: 0.65
     tier: basic
+    efforts:
+      default: high
+      levels:
+        minimal: {quality: -0.45, thinking_tokens: 50}
+        low: {quality: -0.30, thinking_tokens: 150}
+        medium: {quality: -0.15, thinking_tokens: 600}
+        high: {quality: +0.00, thinking_tokens: 2000}
 
   - id: gemini-3.1-pro
     provider: gemini
@@ -104,6 +153,11 @@ models:
     caps: [tools, vision, json]
     quality: 0.90
     tier: flagship
+    efforts:
+      default: high
+      levels:
+        low: {quality: -0.30, thinking_tokens: 150}
+        high: {quality: +0.00, thinking_tokens: 2000}
 
   # --- Local (Ollama) ---
   - id: ollama/llama3.2

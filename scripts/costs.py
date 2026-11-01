@@ -38,6 +38,19 @@ async def report(db_url: str) -> None:
     saved = baseline - total
     pct = f" ({saved / baseline:.0%})" if baseline else ""
     print(f"\nTotal ${total:.6f} vs baseline ${baseline:.6f}: saved ${saved:.6f}{pct}")
+    by_effort: dict[str, list[float]] = defaultdict(lambda: [0, 0, 0, 0.0])
+    for r in records:
+        if r.cost_usd is None:
+            continue
+        row = by_effort[r.effort or "unknown"]  # rows logged before M3.5 have no effort
+        row[0] += 1
+        row[1] += r.tokens_out or 0
+        row[2] += r.tokens_reasoning or 0
+        row[3] += r.cost_usd
+    if by_effort:
+        print(f"\n{'effort':<12}{'requests':>9}{'tokens out':>12}{'reasoning':>11}{'cost $':>12}")
+        for effort, (n, out, reasoning, cost) in sorted(by_effort.items()):
+            print(f"{effort:<12}{int(n):>9}{int(out):>12}{int(reasoning):>11}{cost:>12.6f}")
     if unpriced:
         print(f"{unpriced} request(s) without usage (errors or streams without usage) not counted")
 

@@ -10,12 +10,35 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from tierwise.schema import EFFORT_ORDER as EFFORT_ORDER
+from tierwise.schema import EffortLevel as EffortLevel
+
 ProviderName = Literal["anthropic", "openai", "gemini", "ollama"]
 Capability = Literal["tools", "vision", "json"]
 
 
 class RegistryError(ValueError):
     """The registry file is unreadable or invalid."""
+
+
+class EffortLevelSpec(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    quality: float  # shift from the model's quality at its default effort
+    thinking_tokens: int = Field(ge=0)  # expected reasoning tokens per request
+
+
+class Efforts(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    default: EffortLevel  # what the provider does when no effort is sent
+    levels: dict[EffortLevel, EffortLevelSpec] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _default_listed(self) -> "Efforts":
+        if self.default not in self.levels:
+            raise ValueError(f"default effort '{self.default}' is not one of the levels")
+        return self
 
 
 class ModelSpec(BaseModel):
@@ -33,6 +56,15 @@ class ModelSpec(BaseModel):
     caps: set[Capability]
     quality: float = Field(ge=0, le=1)
     tier: Literal["basic", "moderate", "flagship"]
+    efforts: Efforts | None = None
+    effort_in_cache_key: bool = False  # True where changing effort invalidates the prompt cache
+
+    @model_validator(mode="after")
+    def _effort_quality_in_range(self) -> "ModelSpec":
+        for level, spec in self.efforts.levels.items() if self.efforts else ():
+            if not 0.0 <= self.quality + spec.quality <= 1.0:
+                raise ValueError(f"effort '{level}' takes quality outside 0-1")
+        return self
 
     @property
     def wire_id(self) -> str:

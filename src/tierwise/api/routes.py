@@ -11,6 +11,7 @@ from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.api.errors import GatewayError, gateway_error_from
 from tierwise.api.streaming import sse_response
 from tierwise.costs import cost_usd
+from tierwise.options import Option
 from tierwise.providers.base import Provider, ProviderError
 from tierwise.registry import ModelSpec, Registry
 from tierwise.router.modes import VIRTUAL_MODELS, EmptyAfterTag, UnknownRoutingValue
@@ -54,6 +55,7 @@ class _Recorder:
         self.difficulty: float | None = None
         self.confidence: float | None = None
         self.prefix_hash: str | None = None
+        self.effort: str | None = None
 
     def costs(self, usage: Usage | None) -> tuple[float | None, float | None]:
         if usage is None or self.spec is None:
@@ -81,6 +83,8 @@ class _Recorder:
                 difficulty=self.difficulty,
                 confidence=self.confidence,
                 prefix_hash=self.prefix_hash,
+                effort=self.effort,
+                tokens_reasoning=usage.reasoning_tokens if usage else None,
                 error_code=error_code,
             )
         )
@@ -88,8 +92,12 @@ class _Recorder:
 
 def _choose(
     result: RoutingResult, state: object, recorder: _Recorder
-) -> tuple[ModelSpec, Provider, str, str | None]:
-    """Pick the serving model. Returns (spec, provider, reason, prompt hash to remember)."""
+) -> tuple[ModelSpec, Provider, str, str | None, Option | None]:
+    """Pick the serving model and effort.
+
+    Returns (spec, provider, reason, prompt hash to remember, chosen option); the option
+    is None for a concrete model id, which is served exactly as requested.
+    """
     registry: Registry = state.registry  # type: ignore[attr-defined]
     providers: dict[str, Provider] = state.providers  # type: ignore[attr-defined]
     affinity: AffinityTable = state.affinity  # type: ignore[attr-defined]
@@ -98,7 +106,7 @@ def _choose(
     if target.kind == "model":
         spec, provider = resolve(result.request.model, registry, providers)
         boundaries = prefix_boundaries(result.request)
-        return spec, provider, "override", boundaries[-1][0] if boundaries else None
+        return spec, provider, "override", boundaries[-1][0] if boundaries else None, None
     recorder.mode = target.mode if target.kind == "auto" else f"tier:{target.tier}"
     if result.decision is not None:
         recorder.difficulty = result.decision.difficulty
@@ -107,8 +115,9 @@ def _choose(
         selection = select(result, registry, providers.keys(), affinity)
     except NoEligibleModel as exc:
         raise GatewayError(422, "no_eligible_model", exc.message) from exc
-    spec = selection.candidates[0]
-    return spec, providers[spec.provider], selection.reason, selection.prompt_hash
+    option = selection.candidates[0]
+    spec = option.spec
+    return spec, providers[spec.provider], selection.reason, selection.prompt_hash, option
 
 
 @router.post("/v1/chat/completions")
@@ -123,19 +132,30 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             raise UnknownModel(req.model) from exc
         except EmptyAfterTag as exc:
             raise GatewayError(400, "invalid_request_error", str(exc)) from exc
-        spec, provider, reason, prompt_hash = _choose(result, state, recorder)
+        spec, provider, reason, prompt_hash, option = _choose(result, state, recorder)
         recorder.spec, recorder.model, recorder.source = spec, spec.id, reason
-        forward = result.request
+        effort_header: str
+        if option is None:  # concrete model: forward the client's effort (if any) unchanged
+            forward = result.request
+            sent_effort = forward.reasoning_effort
+            effort_header = sent_effort or "default"
+        else:
+            sent_effort = option.wire_effort
+            forward = result.request.model_copy(update={"reasoning_effort": sent_effort})
+            effort_header = option.header_value
+        # log the level that actually ran (the model's default when nothing was sent)
+        recorder.effort = sent_effort if option is None else option.effort
         headers = {
             "X-Tierwise-Model": spec.id,
             "X-Tierwise-Provider": provider.name,
             "X-Tierwise-Reason": reason,
             "X-Tierwise-Request-Id": recorder.request_id,
+            "X-Tierwise-Effort": effort_header,
         }
 
         def remember() -> None:
             if prompt_hash is not None:
-                affinity.record(prompt_hash, spec.id)
+                affinity.record(prompt_hash, spec.id, sent_effort)
 
         if forward.stream:
 

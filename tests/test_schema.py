@@ -122,3 +122,18 @@ def test_chunk_to_openai_usage_only() -> None:
     assert out["choices"] == []
     assert out["usage"]["prompt_tokens"] == 7
     assert out["usage"]["prompt_tokens_details"] == {"cached_tokens": 3}
+
+
+def test_reasoning_effort_accepts_provider_values() -> None:
+    # tierwise's scale only applies to auto/tier; a named model's provider validates the rest
+    req = ChatRequest.model_validate(
+        {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": "none"}
+    )
+    assert req.reasoning_effort == "none"
+
+
+def test_to_openai_reports_reasoning_tokens() -> None:
+    usage = Usage(input_tokens=10, output_tokens=5, reasoning_tokens=3)
+    out = _response(usage=usage).to_openai()
+    assert out["usage"]["completion_tokens_details"] == {"reasoning_tokens": 3}
+    assert "completion_tokens_details" not in _response().to_openai()["usage"]
