@@ -6,7 +6,7 @@ async def test_lists_only_configured_providers() -> None:
         resp = await client.get("/v1/models")
     payload = resp.json()
     assert payload["object"] == "list"
-    ids = {m["id"]: m["owned_by"] for m in payload["data"]}
+    ids = {m["id"]: m["owned_by"] for m in payload["data"] if m["owned_by"] != "tierwise"}
     assert ids == {
         "claude-haiku-5-5": "anthropic",
         "claude-opus-5-5": "anthropic",

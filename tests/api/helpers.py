@@ -102,7 +102,10 @@ def openai_chunk(delta: dict[str, Any], finish: str | None = None) -> dict[str, 
 
 @asynccontextmanager
 async def gateway(
-    handler: Handler = ok_upstream, db_dir: Path | None = None, **settings: Any
+    handler: Handler = ok_upstream,
+    db_dir: Path | None = None,
+    registry: Registry | None = None,
+    **settings: Any,
 ) -> AsyncIterator[tuple[FastAPI, httpx.AsyncClient]]:
     directory = db_dir or Path(tempfile.mkdtemp())
     values: dict[str, Any] = {
@@ -114,7 +117,9 @@ async def gateway(
         **settings,
     }
     config = Settings(_env_file=None, **values)  # type: ignore[call-arg]
-    app = create_app(config, transport=httpx.MockTransport(handler), registry=make_registry())
+    app = create_app(
+        config, transport=httpx.MockTransport(handler), registry=registry or make_registry()
+    )
     async with app.router.lifespan_context(app):
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://gw") as client:

@@ -7,6 +7,7 @@ import httpx
 from fastapi import FastAPI
 
 from tierwise import __version__
+from tierwise.affinity import AffinityTable
 from tierwise.api.errors import install_error_handlers
 from tierwise.api.routes import router
 from tierwise.config import Settings
@@ -56,6 +57,7 @@ def create_app(
             providers["ollama"] = OllamaProvider(client_for("ollama"), config.ollama_base_url)
         app.state.clients = clients
         app.state.providers = providers
+        app.state.affinity = AffinityTable()
 
         log = RequestLog(config.db_url)
         await log.start()

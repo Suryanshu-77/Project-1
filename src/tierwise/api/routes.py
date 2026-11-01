@@ -1,4 +1,4 @@
-"""HTTP endpoints. The registry decides which provider serves a model; routing arrives in M3."""
+"""HTTP endpoints. ``auto``/``tier:*`` requests are routed; a concrete model id is served as-is."""
 
 import logging
 import time
@@ -7,12 +7,16 @@ import uuid
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
+from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.api.errors import GatewayError, gateway_error_from
 from tierwise.api.streaming import sse_response
 from tierwise.costs import cost_usd
 from tierwise.providers.base import Provider, ProviderError
 from tierwise.registry import ModelSpec, Registry
+from tierwise.router.modes import VIRTUAL_MODELS, EmptyAfterTag, UnknownRoutingValue
+from tierwise.router.router import RoutingResult, route
 from tierwise.schema import ChatRequest, Usage
+from tierwise.selector import NoEligibleModel, select
 from tierwise.store import RequestLog, RequestRecord
 
 router = APIRouter()
@@ -45,6 +49,11 @@ class _Recorder:
         self.request_id = uuid.uuid4().hex
         self.started = time.perf_counter()
         self.spec: ModelSpec | None = None
+        self.source = "override"
+        self.mode: str | None = None
+        self.difficulty: float | None = None
+        self.confidence: float | None = None
+        self.prefix_hash: str | None = None
 
     def costs(self, usage: Usage | None) -> tuple[float | None, float | None]:
         if usage is None or self.spec is None:
@@ -67,26 +76,75 @@ class _Recorder:
                 tokens_out=usage.output_tokens if usage else None,
                 cost_usd=cost,
                 baseline_cost_usd=baseline,
+                source=self.source,
+                mode=self.mode,
+                difficulty=self.difficulty,
+                confidence=self.confidence,
+                prefix_hash=self.prefix_hash,
                 error_code=error_code,
             )
         )
+
+
+def _choose(
+    result: RoutingResult, state: object, recorder: _Recorder
+) -> tuple[ModelSpec, Provider, str, str | None]:
+    """Pick the serving model. Returns (spec, provider, reason, prompt hash to remember)."""
+    registry: Registry = state.registry  # type: ignore[attr-defined]
+    providers: dict[str, Provider] = state.providers  # type: ignore[attr-defined]
+    affinity: AffinityTable = state.affinity  # type: ignore[attr-defined]
+    target = result.target
+    recorder.prefix_hash = split_prefix(result.request)[0]
+    if target.kind == "model":
+        spec, provider = resolve(result.request.model, registry, providers)
+        boundaries = prefix_boundaries(result.request)
+        return spec, provider, "override", boundaries[-1][0] if boundaries else None
+    recorder.mode = target.mode if target.kind == "auto" else f"tier:{target.tier}"
+    if result.decision is not None:
+        recorder.difficulty = result.decision.difficulty
+        recorder.confidence = result.decision.confidence
+    try:
+        selection = select(result, registry, providers.keys(), affinity)
+    except NoEligibleModel as exc:
+        raise GatewayError(422, "no_eligible_model", exc.message) from exc
+    spec = selection.candidates[0]
+    return spec, providers[spec.provider], selection.reason, selection.prompt_hash
 
 
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest, request: Request) -> Response:
     state = request.app.state
     recorder = _Recorder(state.log, state.registry, req.model, req.stream)
+    affinity: AffinityTable = state.affinity
     try:
-        spec, provider = resolve(req.model, state.registry, state.providers)
-        recorder.spec = spec
+        try:
+            result = route(req)
+        except UnknownRoutingValue as exc:
+            raise UnknownModel(req.model) from exc
+        except EmptyAfterTag as exc:
+            raise GatewayError(400, "invalid_request_error", str(exc)) from exc
+        spec, provider, reason, prompt_hash = _choose(result, state, recorder)
+        recorder.spec, recorder.model, recorder.source = spec, spec.id, reason
+        forward = result.request
         headers = {
-            "X-Tierwise-Model": req.model,
+            "X-Tierwise-Model": spec.id,
             "X-Tierwise-Provider": provider.name,
-            "X-Tierwise-Reason": "override",
+            "X-Tierwise-Reason": reason,
             "X-Tierwise-Request-Id": recorder.request_id,
         }
-        if req.stream:
-            chunks = provider.stream(req, spec.wire_id)
+
+        def remember() -> None:
+            if prompt_hash is not None:
+                affinity.record(prompt_hash, spec.id)
+
+        if forward.stream:
+
+            def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
+                recorder.done(usage, status, code)
+                if status == 200:
+                    remember()
+
+            chunks = provider.stream(forward, spec.wire_id)
             try:
                 # Wait for the first chunk so early failures become ordinary HTTP errors.
                 first = await anext(chunks, None)
@@ -97,12 +155,12 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 chunks,
                 first,
                 request_id=recorder.request_id,
-                model=req.model,
+                model=spec.id,
                 headers=headers,
-                include_usage=bool((req.stream_options or {}).get("include_usage")),
-                on_done=recorder.done,
+                include_usage=bool((forward.stream_options or {}).get("include_usage")),
+                on_done=stream_done,
             )
-        response = await provider.chat(req, spec.wire_id)
+        response = await provider.chat(forward, spec.wire_id)
     except (GatewayError, ProviderError) as exc:
         err = exc if isinstance(exc, GatewayError) else gateway_error_from(exc)
         recorder.done(None, err.status, err.code)
@@ -115,6 +173,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
         raise GatewayError(500, "internal_error", message, "api_error") from exc
     cost, _ = recorder.costs(response.usage)
     recorder.done(response.usage, 200, None)
+    remember()
     if cost is not None:
         headers["X-Tierwise-Cost-USD"] = f"{cost:.6f}"
     return JSONResponse(response.to_openai(), headers=headers)
@@ -124,12 +183,13 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 async def list_models(request: Request) -> dict[str, object]:
     registry: Registry = request.app.state.registry
     providers: dict[str, Provider] = request.app.state.providers
+    virtual = [{"id": v, "object": "model", "owned_by": "tierwise"} for v in VIRTUAL_MODELS]
     data = [
         {"id": m.id, "object": "model", "owned_by": m.provider}
         for m in registry.models
         if m.provider in providers
     ]
-    return {"object": "list", "data": data}
+    return {"object": "list", "data": virtual + data}
 
 
 @router.get("/healthz")
