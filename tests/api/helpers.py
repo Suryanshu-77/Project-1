@@ -130,3 +130,15 @@ async def gateway(
 
 def body(model: str, **extra: Any) -> dict[str, Any]:
     return {"model": model, "messages": [{"role": "user", "content": "ping"}], **extra}
+
+
+async def make_key(
+    app: FastAPI, budget: float | None = None, rpm: int | None = None
+) -> tuple[str, Any]:
+    """Create a key in the gateway's database and make it live without the refresh delay."""
+    from tierwise.keys import generate_key, hash_key
+
+    key = generate_key()
+    row = await app.state.log.create_key("test", hash_key(key), key[:10], budget, rpm)
+    app.state.keys.replace(await app.state.log.list_keys())
+    return key, row

@@ -1,6 +1,7 @@
 """Application factory: registry, provider clients, learned router and the request log."""
 
 import asyncio
+import contextlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -13,6 +14,7 @@ from tierwise.api.errors import install_error_handlers
 from tierwise.api.routes import router
 from tierwise.cache import SemanticCache
 from tierwise.config import Settings
+from tierwise.keys import KeyStore
 from tierwise.providers.anthropic import AnthropicProvider
 from tierwise.providers.base import Provider
 from tierwise.providers.gemini import GeminiProvider
@@ -87,9 +89,17 @@ def create_app(
         log = RequestLog(config.db_url)
         await log.start()
         app.state.log = log
+        keys = KeyStore()
+        keys.replace(await log.list_keys())
+        app.state.keys = keys
+        app.state.require_api_key = config.require_api_key
+        refresh = asyncio.create_task(keys.refresh_forever(log, config.keys_refresh_s))
         try:
             yield
         finally:
+            refresh.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh
             for client in clients.values():
                 await client.aclose()
             await log.stop()

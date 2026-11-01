@@ -12,6 +12,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
 
 from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
+from tierwise.api.auth import authenticate
 from tierwise.api.errors import GatewayError, gateway_error_from
 from tierwise.api.streaming import (
     STATUS_UPSTREAM_FAILED_MID_STREAM,
@@ -78,6 +79,7 @@ class _Recorder:
         self.effort: str | None = None
         self.failover_count = 0
         self.cache_hit = False
+        self.key_id: str | None = None
 
     def costs(self, usage: Usage | None) -> tuple[float | None, float | None]:
         if usage is None or self.spec is None:
@@ -109,6 +111,7 @@ class _Recorder:
                 effort=self.effort,
                 failover_count=self.failover_count,
                 cache_hit=self.cache_hit,
+                key_id=self.key_id,
                 tokens_reasoning=usage.reasoning_tokens if usage else None,
                 error_code=error_code,
             )
@@ -216,6 +219,10 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
     policy: RetryPolicy = state.retry
     providers: dict[str, Provider] = state.providers
     try:
+        key = authenticate(
+            request.headers.get("authorization"), state.keys, state.require_api_key
+        )
+        recorder.key_id = key.id if key is not None else None
         try:
             result = await route(req, state.learned)
         except UnknownRoutingValue as exc:
@@ -366,6 +373,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 
 @router.get("/v1/models")
 async def list_models(request: Request) -> dict[str, object]:
+    state = request.app.state
+    authenticate(request.headers.get("authorization"), state.keys, state.require_api_key)
     registry: Registry = request.app.state.registry
     providers: dict[str, Provider] = request.app.state.providers
     virtual = [{"id": v, "object": "model", "owned_by": "tierwise"} for v in VIRTUAL_MODELS]

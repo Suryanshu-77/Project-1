@@ -18,6 +18,11 @@ class GatewayError(Exception):
         self.type = type_
 
 
+class InvalidApiKey(GatewayError):
+    def __init__(self) -> None:
+        super().__init__(401, "invalid_api_key", "Invalid or missing API key.")
+
+
 class AllCircuitsOpen(GatewayError):
     """Every candidate's circuit breaker is open, so nothing was attempted."""
 
