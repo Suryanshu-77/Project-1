@@ -53,6 +53,9 @@ dev = [
     "openai>=1.40",
     "types-pyyaml>=6.0.12.20261030",
 ]
+retrain = [  # the flywheel's retrain + gate: the gateway's own encoder, plus scikit-learn
+    "scikit-learn>=1.5",
+]
 train = [
     "torch>=2.4",
     "transformers>=4.44",

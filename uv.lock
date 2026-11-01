@@ -2919,6 +2919,9 @@ dev = [
     { name = "ruff" },
     { name = "types-pyyaml" },
 ]
+retrain = [
+    { name = "scikit-learn" },
+]
 train = [
     { name = "huggingface-hub" },
     { name = "matplotlib" },
@@ -2960,6 +2963,7 @@ dev = [
     { name = "ruff", specifier = ">=0.6" },
     { name = "types-pyyaml", specifier = ">=6.0.12.20261030" },
 ]
+retrain = [{ name = "scikit-learn", specifier = ">=1.5" }]
 train = [
     { name = "huggingface-hub", specifier = ">=0.24" },
     { name = "matplotlib", specifier = ">=3.9" },
