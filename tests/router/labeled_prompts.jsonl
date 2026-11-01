@@ -1,0 +1,30 @@
+{"prompt": "hi", "label": "easy"}
+{"prompt": "Translate 'good morning, how are you?' into Spanish.", "label": "easy"}
+{"prompt": "What is the capital of Australia?", "label": "easy"}
+{"prompt": "Define photosynthesis in one sentence.", "label": "easy"}
+{"prompt": "Thanks, that worked!", "label": "easy"}
+{"prompt": "Fix typo: 'Teh meeting is at 3pm tomorow.'", "label": "easy"}
+{"prompt": "Rephrase this to sound friendlier: 'Send me the report.'", "label": "easy"}
+{"prompt": "What is 15% of 80?", "label": "easy"}
+{"prompt": "Summarize in one line: The meeting moved to Friday because the venue was double-booked.", "label": "easy"}
+{"prompt": "Hello! Can you format this date as ISO 8601: March 5th 2026?", "label": "easy"}
+{"prompt": "Explain how a hash map handles collisions, with a short example of separate chaining in Python.", "label": "medium"}
+{"prompt": "Write a Python function that takes a list of dictionaries and groups them by a given key, returning a dict of lists. Include a docstring and type hints.", "label": "medium"}
+{"prompt": "What are the main differences between TCP and UDP, and when would I pick each one for a multiplayer game?", "label": "medium"}
+{"prompt": "Write a SQL query that returns the top 5 customers by total order value in 2025 from tables customers(id, name) and orders(id, customer_id, total, created_at).", "label": "medium"}
+{"prompt": "Explain the difference between a process and a thread to a junior developer, with one everyday analogy.", "label": "medium"}
+{"prompt": "Here is a paragraph from my essay. Tighten it and point out any logical gaps: 'Remote work increases productivity because people save time on commuting, and saved time is always used for work, so companies should ban offices.'", "label": "medium"}
+{"prompt": "Write a regular expression that matches US phone numbers in the formats (555) 123-4567, 555-123-4567 and 5551234567, and explain each part.", "label": "medium"}
+{"prompt": "How does React's useEffect cleanup function work? Show an example with a timer.", "label": "medium"}
+{"prompt": "Write a bash script that finds all .log files older than 7 days in /var/log/myapp and compresses them with gzip.", "label": "medium"}
+{"prompt": "Explain what a p-value is and one common way people misinterpret it.", "label": "medium"}
+{"prompt": "Design the architecture for a multi-tenant SaaS billing system that handles usage-based pricing, proration, invoicing and retries for failed payments. Discuss trade-offs between event sourcing and a ledger table, and how you would keep it correct under concurrent updates.", "label": "hard"}
+{"prompt": "Prove that the square root of 2 is irrational, then generalize the proof to show that the square root of any prime is irrational.", "label": "hard"}
+{"prompt": "We need to migrate a 4 TB production PostgreSQL database to a new cluster with zero downtime. Plan the migration step by step, including replication, cutover, rollback and how to verify data integrity. Do not get this wrong.", "label": "hard"}
+{"prompt": "Debug this: our service throws intermittent deadlocks under load.\n```\nERROR: deadlock detected\nDETAIL: Process 4211 waits for ShareLock on transaction 99812; blocked by process 4302.\n```\n```python\nasync def transfer(a, b, amount):\n    async with db.transaction():\n        await db.execute('UPDATE accounts SET bal = bal - $1 WHERE id = $2', amount, a)\n        await db.execute('UPDATE accounts SET bal = bal + $1 WHERE id = $2', amount, b)\n```\nAnalyze the root cause and propose a fix that is safe for concurrent transfers.", "label": "hard"}
+{"prompt": "Perform a security audit of this login endpoint and list every vulnerability with severity and a fix:\n```python\n@app.post('/login')\ndef login(user, pw):\n    row = db.execute(f\"SELECT * FROM users WHERE name='{user}' AND pw='{pw}'\")\n    if row: return {'token': user + str(time.time())}\n```", "label": "hard"}
+{"prompt": "Derive the closed-form solution for ordinary least squares regression from the loss function, then analyze when the normal equations become ill-conditioned and what to do about it.", "label": "hard"}
+{"prompt": "Our incident: checkout latency spiked from 200ms to 9s in production after a deploy, CPU is normal, DB connections are maxed. Analyze likely causes step by step and give a prioritized investigation plan.", "label": "hard"}
+{"prompt": "Refactor this 3-module codebase to remove the circular dependency between orders, inventory and payments while keeping the public API stable. Design the new module boundaries and explain the trade-offs.", "label": "hard"}
+{"prompt": "Review this contract clause for legal risk for us as the vendor and propose safer wording: 'Vendor shall indemnify Customer for any and all losses arising from use of the Service, without limitation.'", "label": "hard"}
+{"prompt": "Optimize this algorithm, which is O(n^3), for n up to 10^6, and prove the complexity of your solution:\n```python\ndef count(a):\n    c = 0\n    for i in range(len(a)):\n        for j in range(i+1, len(a)):\n            for k in range(j+1, len(a)):\n                if a[i] + a[j] + a[k] == 0: c += 1\n    return c\n```", "label": "hard"}
