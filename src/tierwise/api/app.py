@@ -12,6 +12,7 @@ from tierwise import __version__
 from tierwise.affinity import AffinityTable
 from tierwise.api.errors import install_error_handlers
 from tierwise.api.routes import router
+from tierwise.budgets import RateLimiter
 from tierwise.cache import SemanticCache
 from tierwise.config import Settings
 from tierwise.keys import KeyStore
@@ -93,6 +94,7 @@ def create_app(
         keys.replace(await log.list_keys())
         app.state.keys = keys
         app.state.require_api_key = config.require_api_key
+        app.state.limiter = RateLimiter()
         refresh = asyncio.create_task(keys.refresh_forever(log, config.keys_refresh_s))
         try:
             yield

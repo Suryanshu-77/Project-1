@@ -23,6 +23,13 @@ class InvalidApiKey(GatewayError):
         super().__init__(401, "invalid_api_key", "Invalid or missing API key.")
 
 
+class RateLimited(GatewayError):
+    def __init__(self, retry_after: int) -> None:
+        message = f"Rate limit exceeded for this API key; retry in {retry_after} s."
+        super().__init__(429, "rate_limited", message, "rate_limit_error")
+        self.retry_after = retry_after
+
+
 class AllCircuitsOpen(GatewayError):
     """Every candidate's circuit breaker is open, so nothing was attempted."""
 
@@ -54,7 +61,10 @@ def gateway_error_from(exc: ProviderError) -> GatewayError:
 def install_error_handlers(app: FastAPI) -> None:
     @app.exception_handler(GatewayError)
     async def _gateway(_: Request, exc: GatewayError) -> JSONResponse:
-        return error_response(exc.status, exc.code, exc.message, exc.type)
+        response = error_response(exc.status, exc.code, exc.message, exc.type)
+        if isinstance(exc, RateLimited):
+            response.headers["Retry-After"] = str(exc.retry_after)
+        return response
 
     @app.exception_handler(ProviderError)
     async def _provider(_: Request, exc: ProviderError) -> JSONResponse:

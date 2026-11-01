@@ -223,6 +223,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             request.headers.get("authorization"), state.keys, state.require_api_key
         )
         recorder.key_id = key.id if key is not None else None
+        if key is not None:
+            state.limiter.check(key)
         try:
             result = await route(req, state.learned)
         except UnknownRoutingValue as exc:
