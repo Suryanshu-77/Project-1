@@ -1,0 +1,76 @@
+# tierwise demo stack: gateway + Postgres + Prometheus + Grafana + Jaeger, with a fake
+# OpenAI-compatible upstream so it runs with no API keys.
+#   docker compose -f deploy/docker-compose.yml up --build
+# Gateway http://localhost:8000 · Grafana http://localhost:3000 · Prometheus :9090 · Jaeger :16686
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: tierwise
+      POSTGRES_PASSWORD: tierwise
+      POSTGRES_DB: tierwise
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tierwise"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  fake-upstream:
+    build: ..
+    command: ["uvicorn", "--app-dir", "scripts", "fake_upstream:app", "--host", "0.0.0.0", "--port", "8080"]
+    ports:
+      - "8080:8080"
+
+  gateway:
+    build: ..
+    depends_on:
+      postgres:
+        condition: service_healthy
+      fake-upstream:
+        condition: service_started
+    environment:
+      TIERWISE_DB_URL: postgresql+asyncpg://tierwise:tierwise@postgres:5432/tierwise
+      TIERWISE_REGISTRY: deploy/registry.compose.yaml
+      TIERWISE_REQUIRE_KEY: "true"
+      KEYS_REFRESH_S: "2"
+      OLLAMA_BASE_URL: http://fake-upstream:8080/v1
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318
+    ports:
+      - "8000:8000"
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - gateway
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/tierwise.json
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.62.0
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    ports:
+      - "16686:16686"
+      - "4318:4318"
+
+volumes:
+  pgdata:

@@ -1,0 +1,36 @@
+# Registry for the compose demo: three models of different size, price and tier, all served
+# by the fake upstream through the Ollama (OpenAI-compatible) adapter. Prices are made up but
+# proportioned like real basic / moderate / flagship models, so routing savings are visible.
+# To use real providers instead, point TIERWISE_REGISTRY back at config/registry.yaml and add
+# provider keys to .env.
+
+baseline_model: large
+
+models:
+  - id: small
+    provider: ollama
+    upstream_id: small
+    price_in: 0.10
+    price_out: 0.40
+    context: 128000
+    caps: [tools, json]
+    quality: 0.55
+    tier: basic
+  - id: medium
+    provider: ollama
+    upstream_id: medium
+    price_in: 1.00
+    price_out: 4.00
+    context: 128000
+    caps: [tools, json]
+    quality: 0.80
+    tier: moderate
+  - id: large
+    provider: ollama
+    upstream_id: large
+    price_in: 5.00
+    price_out: 25.00
+    context: 200000
+    caps: [tools, json]
+    quality: 0.95
+    tier: flagship
