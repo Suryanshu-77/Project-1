@@ -26,6 +26,13 @@ def load_tokenizer(path: Path) -> Tokenizer:
     return tokenizer
 
 
+def special_id(tokenizer: Tokenizer, token: str) -> int:
+    token_id = tokenizer.token_to_id(token)
+    if token_id is None:
+        raise ValueError(f"tokenizer has no {token} token")
+    return token_id
+
+
 def segments(req: ChatRequest) -> list[str]:
     """What the classifier reads, most important first: last user turn, previous one, system."""
     users = [text_of(m.content) for m in req.messages if m.role == "user"]
@@ -37,7 +44,7 @@ def segments(req: ChatRequest) -> list[str]:
 def build_inputs(
     tokenizer: Tokenizer, req: ChatRequest, max_tokens: int = MAX_TOKENS
 ) -> EncodedInput:
-    cls_id, sep_id = tokenizer.token_to_id("[CLS]"), tokenizer.token_to_id("[SEP]")
+    cls_id, sep_id = special_id(tokenizer, "[CLS]"), special_id(tokenizer, "[SEP]")
     budget = max_tokens - 2  # [CLS] ... [SEP]
     body: list[int] = []
     for text in segments(req):
