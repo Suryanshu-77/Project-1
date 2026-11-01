@@ -61,7 +61,7 @@ class ChatRequest(BaseModel):
     # Real SDK clients send fields we don't use (user, seed, n, ...); ignore them.
     model_config = ConfigDict(extra="ignore")
 
-    model: str
+    model: str = "auto"  # automatic routing unless the client names a model
     messages: list[Message] = Field(min_length=1)
     temperature: float | None = None
     top_p: float | None = None

@@ -4,8 +4,8 @@ A self-hosted, OpenAI-compatible LLM gateway that picks the cheapest model expec
 each request well, across Anthropic, OpenAI, Gemini and local Ollama models, and measures whether
 that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 
-Status: early development (M2: four providers, streaming, model registry, cost tracking and a
-request log; automatic routing arrives in M3).
+Status: early development (M3: automatic routing by a rules-based difficulty scorer, across
+four providers with streaming, a model registry, cost tracking and a request log).
 Design: [docs/superpowers/specs/2026-11-01-tierwise-design.md](docs/superpowers/specs/2026-11-01-tierwise-design.md)
 
 ## Quickstart
@@ -23,7 +23,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="unused")
 reply = client.chat.completions.create(
-    model="claude-haiku-5-5",  # any id from config/registry.yaml
+    model="auto",              # let tierwise choose; or any id from config/registry.yaml
     messages=[{"role": "user", "content": "Hello!"}],
     stream=False,              # stream=True works too
 )
@@ -32,6 +32,38 @@ reply = client.chat.completions.create(
 `GET /v1/models` lists the models whose provider is configured. Each response carries
 `X-Tierwise-Model`, `X-Tierwise-Provider`, `X-Tierwise-Reason` and `X-Tierwise-Request-Id`
 headers, plus `X-Tierwise-Cost-USD` on non-streamed replies.
+
+## Automatic routing
+
+Send one of these as `model` and tierwise picks the model for you:
+
+| `model` | What happens |
+|---|---|
+| `auto` (default) | score the request's difficulty, pick the cheapest model good enough for it |
+| `auto:cheap` / `auto:quality` | same, with the quality bar lowered or raised one notch |
+| `tier:basic` / `tier:moderate` / `tier:flagship` | cheapest capable model in that tier, no scoring |
+| a registry id, e.g. `claude-sonnet-5-5` | exactly that model |
+
+Put `[critical]` or `[easy]` anywhere in your last message to force the hardest or easiest
+routing; the tag is removed before the request is forwarded.
+
+How a model is chosen:
+
+1. **Difficulty.** `src/tierwise/router/rules.py` scores the request from cheap signals: length,
+   code, math, high-stakes words ("production", "security"), reasoning words ("design",
+   "prove"), easy words ("translate", "hi"), tools, images and conversation length.
+2. **Quality bar.** `bar = 0.30 + 0.65 x difficulty`, shifted by `auto:cheap`/`auto:quality`,
+   and raised one step when the scorer is unsure (a score near 0.5).
+3. **Selection.** Models that lack a needed capability (tools, vision, JSON) or context window
+   are dropped. Of those that clear the bar, the one with the lowest *estimated* cost wins,
+   counting prompt-cache discounts. A 422 `no_eligible_model` means nothing could handle it.
+4. **Affinity.** Conversations stick to the model whose prompt cache is still warm, unless
+   switching would save more than 10%.
+
+`X-Tierwise-Reason` says why: `rules` (scored), `override` (tag, tier or explicit model),
+`affinity` (kept on its warm model) or `fallback` (scorer error, or no model cleared the bar).
+Retune the scorer by editing `WEIGHTS` in `rules.py` and running
+`uv run pytest tests/router/test_rules.py`, which checks it against 30 labeled prompts.
 
 ## Providers
 
@@ -80,6 +112,12 @@ uv run python scripts/smoke.py
 
 ```bash
 uv run python scripts/smoke.py --stream
+```
+
+See which model `auto` picks for an easy, a medium and a critical prompt:
+
+```bash
+uv run python scripts/smoke.py --auto
 ```
 
 ## Development

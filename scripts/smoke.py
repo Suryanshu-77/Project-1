@@ -1,6 +1,6 @@
 """Live smoke test: send one tiny prompt per model through a running tierwise gateway.
 
-Usage: uv run python scripts/smoke.py [--model MODEL ...] [--stream] [--base-url URL]
+Usage: uv run python scripts/smoke.py [--model MODEL ...] [--stream] [--auto] [--base-url URL]
 By default it tries the basic-tier model of each provider in config/registry.yaml.
 Models whose provider has no key configured (404 model_not_found) are skipped.
 """
@@ -14,6 +14,11 @@ import openai
 from tierwise.registry import load_registry
 
 PROMPT = "Reply with the single word: pong"
+AUTO_PROMPTS = [
+    "hi",
+    "Explain how a hash map handles collisions, with a short example.",
+    "[critical] Design a zero-downtime migration plan for a 4 TB production database.",
+]
 
 
 def default_models() -> list[str]:
@@ -58,14 +63,35 @@ def run_stream(client: openai.OpenAI, model: str) -> str:
     return f"streamed, first token {ttft} ms, total {total_ms:.0f} ms: {''.join(parts)!r}"
 
 
+def run_auto(client: openai.OpenAI) -> int:
+    failures = 0
+    for prompt in AUTO_PROMPTS:
+        try:
+            raw = client.chat.completions.with_raw_response.create(
+                model="auto", messages=[{"role": "user", "content": prompt}], max_tokens=16
+            )
+        except openai.APIError as exc:
+            print(f"FAIL {prompt[:40]!r}: {exc}")
+            failures += 1
+            continue
+        model = raw.headers.get("X-Tierwise-Model")
+        reason = raw.headers.get("X-Tierwise-Reason")
+        cost = raw.headers.get("X-Tierwise-Cost-USD")
+        print(f"OK   {prompt[:40]!r} -> {model} ({reason}), ${cost}")
+    return 1 if failures else 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", action="append", dest="models")
     parser.add_argument("--stream", action="store_true")
+    parser.add_argument("--auto", action="store_true", help="show what auto routing picks")
     parser.add_argument("--base-url", default="http://127.0.0.1:8000/v1")
     args = parser.parse_args()
 
     client = openai.OpenAI(base_url=args.base_url, api_key="unused")
+    if args.auto:
+        return run_auto(client)
     failures = 0
     for model in args.models or default_models():
         try:
