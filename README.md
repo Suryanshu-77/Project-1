@@ -60,6 +60,26 @@ How a model is chosen:
 4. **Affinity.** Conversations stick to the model whose prompt cache is still warm, unless
    switching would save more than 10%.
 
+### Reasoning effort
+
+Thinking tokens are billed as output, so tierwise picks a **model and an effort level
+together**: each model with an `efforts` block in the registry becomes one option per level,
+and the cheapest option that still clears the quality bar wins.
+
+- **Scale:** `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Sent to Anthropic as
+  `output_config.effort`, to OpenAI as `reasoning_effort`, and to Gemini as
+  `thinkingConfig.thinkingLevel`. When the chosen level is the provider's default, nothing
+  is sent.
+- **Quality:** a level below the default lowers quality by its registry value at difficulty
+  0.5, scaled with the request's difficulty: low effort costs little on easy requests and a
+  lot on hard ones.
+- **Caching:** `effort_in_cache_key: true` (Anthropic) means a different effort can't reuse
+  the conversation's prompt cache, so tierwise prices that switch as a cache miss.
+- **Your effort wins:** send `reasoning_effort` and tierwise only considers models that
+  support that level (422 `no_eligible_model` if none do).
+- `X-Tierwise-Effort` reports the level sent, or `default`; `scripts/costs.py` breaks cost
+  down by effort.
+
 `X-Tierwise-Reason` says why: `rules` (scored), `override` (tag, tier or explicit model),
 `affinity` (kept on its warm model) or `fallback` (scorer error, or no model cleared the bar).
 Retune the scorer by editing `WEIGHTS` in `rules.py` and running
