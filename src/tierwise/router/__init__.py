@@ -3,7 +3,7 @@
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-Source = Literal["override", "rules", "fallback"]
+Source = Literal["override", "rules", "learned", "fallback"]
 
 
 @dataclass(frozen=True)

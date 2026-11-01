@@ -1,0 +1,2 @@
+MiniLM tokenizer and ONNX encoder: sentence-transformers/all-MiniLM-L6-v2 (https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2), Apache License 2.0.
+Classifier training labels: routellm/gpt4_dataset (https://huggingface.co/datasets/routellm/gpt4_dataset), Apache License 2.0.

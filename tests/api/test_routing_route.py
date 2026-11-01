@@ -353,3 +353,23 @@ async def test_log_stores_level_that_ran_not_default(tmp_path: Path) -> None:
     assert resp.headers["X-Tierwise-Effort"] == "default"  # nothing was sent
     [row] = await app.state.log.fetch_all()
     assert row.effort == "low"  # but the provider ran at its default level, low
+
+
+class _FakeLearned:
+    async def decide(self, req: ChatRequest) -> Any:
+        from tierwise.router import RoutingDecision
+
+        return RoutingDecision(difficulty=0.2, confidence=0.9, source="learned")
+
+
+async def test_learned_source_logged_and_header(tmp_path: Path) -> None:
+    async with routed(db_dir=tmp_path) as (app, client):
+        app.state.learned = _FakeLearned()
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "explain the CAP theorem"}]},
+        )
+        assert resp.status_code == 200
+        assert resp.headers["X-Tierwise-Reason"] == "learned"
+    [row] = await app.state.log.fetch_all()
+    assert row.source == "learned"
