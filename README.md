@@ -120,8 +120,10 @@ encoder plus classifier takes 6.3 ms at p50 (`scripts/bench_router.py`).
 The tokenizer and trained classifier are committed and ship in the wheel; the 90 MB ONNX encoder
 does not. Without it the gateway logs a warning and routes with rules only. Fetch it with
 `tierwise fetch-model`, which downloads the official Hugging Face export at a pinned commit and
-checks its sha256 before saving it to `~/.cache/tierwise/router/`. `--out DIR` picks another
-directory; the gateway looks in `TIERWISE_ROUTER_DIR` first, then in that cache.
+checks its sha256 before saving it to `~/.cache/tierwise/router/`, where the gateway finds it
+on its own. The gateway looks for `model.onnx` in the router directory first, then in that
+cache. Only use `--out DIR` with `TIERWISE_ROUTER_DIR=DIR` if `DIR` also holds `router.json`,
+`classifier.npz` and `tokenizer.json`. Otherwise the learned router turns itself off.
 
 To export it yourself, or to retrain:
 

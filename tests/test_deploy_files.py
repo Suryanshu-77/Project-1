@@ -128,3 +128,11 @@ def test_image_runs_as_non_root() -> None:
     lines = (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
     users = [line.split()[1] for line in lines if line.startswith("USER ")]
     assert users and users[-1] not in {"root", "0"}
+
+
+def test_release_publishes_only_after_the_test_suite() -> None:
+    """A PyPI version can never be re-uploaded: the job publish waits on must run pytest."""
+    release = yaml.safe_load((ROOT / ".github" / "workflows" / "release.yml").read_text())
+    needs = release["jobs"]["publish"]["needs"]
+    gate = release["jobs"][needs]["steps"]
+    assert any("pytest" in str(step.get("run", "")) for step in gate)

@@ -16,6 +16,8 @@ jobs:
         run: |
           version=$(uv version --short)
           test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
+      - run: uv sync
+      - run: uv run pytest -q  # a PyPI version can't be re-uploaded: never publish untested
       - run: uv build
       - name: wheel installs and serves without the repo
         run: |
