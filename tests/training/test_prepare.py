@@ -65,3 +65,11 @@ def test_exported_weights_match_sklearn() -> None:
             input_dim=8,
         )
         np.testing.assert_allclose(clf.predict_proba(x), model.predict_proba(x)[:, 1], atol=1e-5)
+
+
+def test_prepare_keeps_eval_fields() -> None:
+    rows = [{"prompt": "a question", "mixtral_score": 2, "gpt4_response": "abcd",
+             "mixtral_response": "ab"}]  # fmt: skip
+    [row] = [r for split in prepare(rows, limit=None).values() for r in split]
+    assert row == {"prompt": "a question", "label": 1, "mixtral_score": 2, "prompt_chars": 10,
+                   "gpt4_chars": 4, "mixtral_chars": 2}  # fmt: skip
