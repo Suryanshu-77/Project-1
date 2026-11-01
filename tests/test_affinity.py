@@ -1,6 +1,6 @@
 from typing import Any
 
-from tierwise.affinity import AffinityTable, split_prefix
+from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.schema import ChatRequest
 from tierwise.tokens import estimate_output, estimate_tokens
 
@@ -90,3 +90,32 @@ def test_lru_eviction() -> None:
         table.record(prefix, "m")
     assert table.warm_models("p1") == {}
     assert set(table.warm_models("p3")) == {"m"}
+
+
+def test_continued_conversation_shares_a_boundary_with_the_previous_prompt() -> None:
+    turn1 = _req(
+        [{"role": "system", "content": "You are helpful."}, {"role": "user", "content": "q1"}]
+    )
+    turn2 = _req(
+        [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+        ]
+    )
+    served_prompt, served_tokens = prefix_boundaries(turn1)[-1]
+    earlier = prefix_boundaries(turn2)[:-1]
+    assert (served_prompt, served_tokens) in earlier
+
+
+def test_longest_warm_boundary_and_chain_incumbent() -> None:
+    clock = FakeClock()
+    table = AffinityTable(clock=clock)
+    bounds = [("h1", 10), ("h2", 25), ("h3", 40)]
+    table.record("h2", "model-a")
+    assert table.longest_warm(bounds, "model-a", 300) == 25
+    assert table.longest_warm(bounds, "model-b", 300) == 0
+    assert table.chain_incumbent(bounds, lambda _: 300) == "model-a"
+    clock.now = 400
+    assert table.chain_incumbent(bounds, lambda _: 300) is None

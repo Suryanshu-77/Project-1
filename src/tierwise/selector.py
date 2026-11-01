@@ -7,7 +7,7 @@ from collections.abc import Collection
 from dataclasses import dataclass
 from typing import Literal
 
-from tierwise.affinity import AffinityTable, split_prefix
+from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.registry import ModelSpec, Registry
 from tierwise.router.modes import Mode
 from tierwise.router.router import RoutingResult
@@ -34,7 +34,8 @@ class Selection:
     candidates: list[ModelSpec]  # never empty; candidates[0] serves the request
     reason: Reason
     bar: float | None
-    prefix_hash: str | None
+    prefix_hash: str | None  # the conversation so far (for the log)
+    prompt_hash: str | None  # the whole prompt; record it for the model that serves it
 
 
 def quality_bar(difficulty: float, confidence: float, mode: Mode) -> float:
@@ -63,7 +64,10 @@ def select(
     """Choose for an ``auto`` or ``tier`` target. Raises NoEligibleModel if nothing fits."""
     req, target = result.request, result.target
     est_input, est_output = estimate_tokens(req), estimate_output(req)
-    prefix_hash, prefix_tokens = split_prefix(req)
+    prefix_hash, _ = split_prefix(req)
+    boundaries = prefix_boundaries(req)
+    prompt_hash = boundaries[-1][0] if boundaries else None
+    earlier = boundaries[:-1]  # the new last message can't be cached yet
 
     fits = [
         m
@@ -86,13 +90,13 @@ def select(
             m,
             est_input,
             est_output,
-            prefix_tokens if affinity.is_warm(prefix_hash, m.id, m.cache_ttl_s) else 0,
+            affinity.longest_warm(earlier, m.id, m.cache_ttl_s),
         )
         for m in fits
     }
     by_cost = sorted(fits, key=lambda m: (cost[m.id], -m.quality, m.id))
     if target.kind == "tier":
-        return Selection(by_cost, "override", None, prefix_hash)
+        return Selection(by_cost, "override", None, prefix_hash, prompt_hash)
 
     decision = result.decision
     assert decision is not None and target.mode is not None  # auto targets always have both
@@ -100,16 +104,16 @@ def select(
     clear = [m for m in by_cost if m.quality >= bar]
     by_quality = sorted(fits, key=lambda m: (-m.quality, m.id))
     if not clear:
-        return Selection(by_quality, "fallback", bar, prefix_hash)
+        return Selection(by_quality, "fallback", bar, prefix_hash, prompt_hash)
 
     below = [m for m in by_quality if m.quality < bar]
     reason: Reason = decision.source
-    incumbent_id = affinity.incumbent(prefix_hash, lambda mid: _ttl(registry, mid))
+    incumbent_id = affinity.chain_incumbent(earlier, lambda mid: _ttl(registry, mid))
     incumbent = next((m for m in clear if m.id == incumbent_id), None)
     if incumbent is not None and cost[incumbent.id] <= AFFINITY_SLACK * cost[clear[0].id]:
         clear = [incumbent, *(m for m in clear if m is not incumbent)]
         reason = "affinity"
-    return Selection([*clear, *below], reason, bar, prefix_hash)
+    return Selection([*clear, *below], reason, bar, prefix_hash, prompt_hash)
 
 
 def _ttl(registry: Registry, model_id: str) -> int | None:

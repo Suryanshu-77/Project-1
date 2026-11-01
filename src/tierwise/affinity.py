@@ -8,33 +8,53 @@ import hashlib
 import json
 import time
 from collections import OrderedDict
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from tierwise.schema import ChatRequest
 from tierwise.tokens import estimate_text, text_of
 
 
-def split_prefix(req: ChatRequest) -> tuple[str | None, int]:
-    """Hash and estimated size of everything before the last user message.
+def _items(req: ChatRequest) -> list[tuple[str, int]]:
+    """The prompt as cache-able items, in the order providers see them: tools, then messages."""
+    items: list[tuple[str, int]] = []
+    if req.tools:
+        tools = [t.model_dump(exclude_none=True) for t in req.tools]
+        items.append((_canonical({"tools": tools}), estimate_text(json.dumps(tools))))
+    for m in req.messages:
+        items.append(
+            (_canonical(m.model_dump(exclude_none=True)), estimate_text(text_of(m.content)))
+        )
+    return items
 
-    The prefix is the system/developer messages, the tool definitions and all earlier turns:
-    the part a provider can serve from its prompt cache. An empty prefix has no hash.
+
+def _canonical(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def prefix_boundaries(req: ChatRequest) -> list[tuple[str, int]]:
+    """(rolling hash, cumulative estimated tokens) after each item of the prompt.
+
+    Providers cache the *beginning* of a prompt, so turn N+1 of a conversation can reuse the
+    cache written for turn N: the whole turn-N prompt is one of turn N+1's boundaries.
+    The last entry covers the full prompt.
     """
+    boundaries: list[tuple[str, int]] = []
+    digest, tokens = b"", 0
+    for canonical, item_tokens in _items(req):
+        digest = hashlib.sha256(digest + canonical.encode()).digest()
+        tokens += item_tokens
+        boundaries.append((digest.hex(), tokens))
+    return boundaries
+
+
+def split_prefix(req: ChatRequest) -> tuple[str | None, int]:
+    """Hash and size of everything before the last user message (the conversation so far)."""
     last_user = max((i for i, m in enumerate(req.messages) if m.role == "user"), default=None)
-    earlier = req.messages if last_user is None else req.messages[:last_user]
-    system_after = [m for m in req.messages[len(earlier) :] if m.role in ("system", "developer")]
-    prefix_messages = [*earlier, *system_after]
-    tools = [t.model_dump(exclude_none=True) for t in req.tools or []]
-    if not prefix_messages and not tools:
+    count = (1 if req.tools else 0) + (len(req.messages) if last_user is None else last_user)
+    if count == 0:
         return None, 0
-    payload: dict[str, Any] = {
-        "messages": [m.model_dump(exclude_none=True) for m in prefix_messages],
-        "tools": tools,
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    text = "".join(text_of(m.content) for m in prefix_messages) + json.dumps(tools)
-    return hashlib.sha256(canonical.encode()).hexdigest(), estimate_text(text)
+    return prefix_boundaries(req)[count - 1]
 
 
 class AffinityTable:
@@ -62,6 +82,24 @@ class AffinityTable:
     def is_warm(self, prefix_hash: str | None, model_id: str, ttl: int | None) -> bool:
         served_at = self.warm_models(prefix_hash).get(model_id)
         return served_at is not None and ttl is not None and self._clock() - served_at <= ttl
+
+    def longest_warm(
+        self, boundaries: Sequence[tuple[str, int]], model_id: str, ttl: int | None
+    ) -> int:
+        """Estimated tokens of the longest boundary ``model_id`` has warm in its cache."""
+        for prefix_hash, tokens in reversed(boundaries):
+            if self.is_warm(prefix_hash, model_id, ttl):
+                return tokens
+        return 0
+
+    def chain_incumbent(
+        self, boundaries: Sequence[tuple[str, int]], ttl_for: Callable[[str], int | None]
+    ) -> str | None:
+        """The warm model for the longest boundary that has one."""
+        for prefix_hash, _ in reversed(boundaries):
+            if (model_id := self.incumbent(prefix_hash, ttl_for)) is not None:
+                return model_id
+        return None
 
     def incumbent(
         self, prefix_hash: str | None, ttl_for: Callable[[str], int | None]

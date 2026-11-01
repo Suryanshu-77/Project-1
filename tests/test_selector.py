@@ -187,3 +187,32 @@ def test_stale_affinity_for_missing_model_ignored() -> None:
     selection = select(_result(req, 0.1), REGISTRY, ALL_PROVIDERS, table)
     assert selection.reason == "rules"
     assert selection.prefix_hash == prefix
+
+
+def test_continued_conversation_keeps_incumbent() -> None:
+    near = Registry(
+        baseline_model="a",
+        models=[
+            spec("a", "anthropic", 0.9, 1.00, 1.0, cache_ttl_s=300, price_cache_read=0.1),
+            spec("b", "openai", 0.9, 0.95, 1.0),
+        ],
+    )
+    system = {"role": "system", "content": "You are a careful assistant. " * 200}
+    turn1 = ChatRequest.model_validate({"messages": [system, {"role": "user", "content": "q1"}]})
+    table = AffinityTable()
+    first = select(_result(turn1, 0.5), near, ALL_PROVIDERS, table)
+    assert first.candidates[0].id == "b" and first.prompt_hash is not None
+    table.record(first.prompt_hash, "a")  # pretend "a" served turn 1
+    turn2 = ChatRequest.model_validate(
+        {
+            "messages": [
+                system,
+                {"role": "user", "content": "q1"},
+                {"role": "assistant", "content": "a1"},
+                {"role": "user", "content": "q2"},
+            ]
+        }
+    )
+    second = select(_result(turn2, 0.5), near, ALL_PROVIDERS, table)
+    assert second.candidates[0].id == "a"
+    assert second.reason == "affinity"
