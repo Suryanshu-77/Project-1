@@ -158,3 +158,16 @@ def test_load_learned_corrupt_config_returns_none(
     (tmp_path / "router.json").write_text("{not json")
     assert load_learned(_settings(tmp_path)) is None
     assert "router.json" in caplog.text
+
+
+def test_load_learned_truncated_classifier_returns_none(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    real = Path(__file__).parents[2] / "models" / "router"
+    (tmp_path / "router.json").write_text(
+        json.dumps({"encoder": "x", "threshold": 0.5, "dim": 384, "kind": "mlp"})
+    )
+    (tmp_path / "model.onnx").write_bytes(b"")  # never reached: the classifier fails first
+    (tmp_path / "classifier.npz").write_bytes((real / "classifier.npz").read_bytes()[:5000])
+    assert load_learned(_settings(tmp_path)) is None
+    assert "classifier.npz" in caplog.text

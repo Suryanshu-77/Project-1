@@ -11,6 +11,12 @@ from tierwise.schema import ChatRequest
 from tierwise.tokens import text_of
 
 MAX_TOKENS = 256  # including [CLS] and [SEP]
+# The classifier was trained on user turns only, so a long boilerplate system prompt would
+# shift its score; only its head is read.
+SYSTEM_BUDGET = 32
+# A WordPiece token covers at least one character, so this prefix always holds the budget;
+# it stops a multi-megabyte message from being tokenized in full.
+MAX_CHARS_PER_TOKEN = 16
 
 
 @dataclass(frozen=True)
@@ -35,12 +41,17 @@ def special_id(tokenizer: Tokenizer, token: str) -> int:
     return token_id
 
 
-def segments(req: ChatRequest) -> list[str]:
-    """What the classifier reads, most important first: last user turn, previous one, system."""
+def _segments(req: ChatRequest) -> list[tuple[str, int]]:
+    """(text, own token cap): last user turn, previous user turn, then the system prompt."""
     users = [text_of(m.content) for m in req.messages if m.role == "user"]
     system = "\n".join(text_of(m.content) for m in req.messages if m.role == "system")
-    ordered = [*reversed(users[-2:]), system]
-    return [s for s in ordered if s.strip()]
+    ordered = [(u, MAX_TOKENS) for u in reversed(users[-2:])] + [(system, SYSTEM_BUDGET)]
+    return [(text, cap) for text, cap in ordered if text.strip()]
+
+
+def segments(req: ChatRequest) -> list[str]:
+    """What the classifier reads, most important first: last user turn, previous one, system."""
+    return [text for text, _ in _segments(req)]
 
 
 def build_inputs(
@@ -49,7 +60,7 @@ def build_inputs(
     cls_id, sep_id = special_id(tokenizer, "[CLS]"), special_id(tokenizer, "[SEP]")
     budget = max_tokens - 2  # [CLS] ... [SEP]
     body: list[int] = []
-    for text in segments(req):
+    for text, cap in _segments(req):
         if body:
             if budget < 2:  # a separator plus at least one token
                 break
@@ -58,7 +69,9 @@ def build_inputs(
         if budget <= 0:
             break
         # cut from the tail: the start of a turn carries the instruction
-        ids = tokenizer.encode(text, add_special_tokens=False).ids[:budget]
+        take = min(budget, cap)
+        prefix = text[: take * MAX_CHARS_PER_TOKEN]
+        ids = tokenizer.encode(prefix, add_special_tokens=False).ids[:take]
         body.extend(ids)
         budget -= len(ids)
     input_ids = [cls_id, *body, sep_id]

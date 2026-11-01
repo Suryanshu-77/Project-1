@@ -4,7 +4,13 @@ from typing import Any
 import pytest
 from tokenizers import Tokenizer
 
-from tierwise.router.encoder import MAX_TOKENS, build_inputs, load_tokenizer, segments
+from tierwise.router.encoder import (
+    MAX_TOKENS,
+    SYSTEM_BUDGET,
+    build_inputs,
+    load_tokenizer,
+    segments,
+)
 from tierwise.schema import ChatRequest
 
 TOKENIZER = Path(__file__).parents[2] / "models" / "router" / "tokenizer.json"
@@ -53,16 +59,45 @@ def test_last_user_turn_gets_budget_first(tok: Tokenizer) -> None:
 
 
 def test_earlier_segments_fill_remaining_budget(tok: Tokenizer) -> None:
-    req = _req(("system", "systemword " * 400), ("user", "first question"), ("user", "second one"))
+    req = _req(("system", "be brief"), ("user", "firstword " * 400), ("user", "second one"))
     enc = build_inputs(tok, req)
     text = _middle(tok, enc.input_ids)
     assert len(enc.input_ids) == MAX_TOKENS
     assert text.startswith("second one")
-    assert "first question" in text
-    assert "systemword" in text
+    assert "firstword" in text
+    assert "be brief" not in text  # the previous user turn used up the budget
 
 
 def test_no_user_text_gives_cls_sep(tok: Tokenizer) -> None:
     image = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
     enc = build_inputs(tok, _req(("user", image)))
     assert enc.input_ids == [tok.token_to_id("[CLS]"), tok.token_to_id("[SEP]")]
+
+
+class _SpyTokenizer:
+    """Wraps the real tokenizer and records how much text each encode() call was given."""
+
+    def __init__(self, inner: Tokenizer) -> None:
+        self.inner, self.lengths = inner, []  # type: list[int]
+
+    def token_to_id(self, token: str) -> int | None:
+        return self.inner.token_to_id(token)
+
+    def encode(self, text: str, add_special_tokens: bool = True) -> Any:
+        self.lengths.append(len(text))
+        return self.inner.encode(text, add_special_tokens=add_special_tokens)
+
+
+def test_huge_segment_tokenizes_only_a_prefix(tok: Tokenizer) -> None:
+    spy = _SpyTokenizer(tok)
+    enc = build_inputs(spy, _req(("user", "word " * 400_000)))  # type: ignore[arg-type]
+    assert len(enc.input_ids) == MAX_TOKENS
+    assert max(spy.lengths) <= MAX_TOKENS * 16
+
+
+def test_system_prompt_capped(tok: Tokenizer) -> None:
+    req = _req(("system", "boilerplate " * 400), ("user", "hi"))
+    enc = build_inputs(tok, req)
+    # [CLS] hi [SEP] <system head> [SEP]
+    assert len(enc.input_ids) == 4 + SYSTEM_BUDGET
+    assert "boilerplate" in _middle(tok, enc.input_ids)

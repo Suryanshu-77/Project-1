@@ -4,6 +4,7 @@ Weights live in an .npz as W0, b0, W1, b1, ... with W_i shaped (in, out). One la
 regression; more layers are an MLP with ReLU between them. No pickles, no sklearn at runtime.
 """
 
+import zipfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -37,7 +38,7 @@ class Classifier:
         try:
             with np.load(path) as data:
                 arrays = {k: np.asarray(data[k], dtype=np.float32) for k in data.files}
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, EOFError, KeyError, zipfile.BadZipFile) as exc:
             raise ArtifactError(f"cannot read classifier weights {path}: {exc}") from exc
         weights: list[np.ndarray] = []
         biases: list[np.ndarray] = []
@@ -49,6 +50,8 @@ class Classifier:
             biases.append(arrays[f"b{i}"].reshape(-1))
         if not weights:
             raise ArtifactError(f"{path}: no W0 layer")
+        if any(w.ndim != 2 for w in weights):
+            raise ArtifactError(f"{path}: every weight matrix must be 2-D")
         if weights[0].shape[0] != expected_dim:
             raise ArtifactError(
                 f"{path}: classifier expects {weights[0].shape[0]}-dim input, "
