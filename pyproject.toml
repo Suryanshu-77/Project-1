@@ -54,6 +54,14 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/tierwise"]
 
+# the default registry and the small router artifacts ship in the wheel; model.onnx is fetched
+[tool.hatch.build.targets.wheel.force-include]
+"config/registry.yaml" = "tierwise/data/registry.yaml"
+"models/router/classifier.npz" = "tierwise/data/router/classifier.npz"
+"models/router/router.json" = "tierwise/data/router/router.json"
+"models/router/tokenizer.json" = "tierwise/data/router/tokenizer.json"
+"models/router/NOTICE" = "tierwise/data/router/NOTICE"
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"

@@ -10,7 +10,7 @@ from typing import Protocol
 import numpy as np
 from tokenizers import Tokenizer
 
-from tierwise.config import Settings
+from tierwise.config import CACHE_ROUTER_DIR, Settings, router_directory
 from tierwise.router import RoutingDecision
 from tierwise.router.classifier import ArtifactError, Classifier
 from tierwise.router.encoder import (
@@ -125,7 +125,10 @@ def _load(directory: Path, settings: Settings) -> LearnedRouter:
         raise ArtifactError(f"{config_path}: threshold {threshold} is outside (0, 1)")
     model_path = directory / "model.onnx"
     if not model_path.exists():
-        raise ArtifactError(f"{model_path} is missing; run training.export_onnx")
+        model_path = CACHE_ROUTER_DIR / "model.onnx"
+    if not model_path.exists():
+        raise ArtifactError(f"model.onnx is in neither {directory} nor {CACHE_ROUTER_DIR}; "
+                            "run `tierwise fetch-model`")  # fmt: skip
     classifier = Classifier.load(directory / "classifier.npz", expected_dim=dim)
     try:
         tokenizer = load_tokenizer(directory / "tokenizer.json")
@@ -143,7 +146,7 @@ def load_learned(settings: Settings) -> LearnedRouter | None:
     if not settings.learned_router:
         return None
     try:
-        return _load(Path(settings.router_dir), settings)
+        return _load(router_directory(settings), settings)
     except ArtifactError as exc:
         logger.warning("learned router disabled, routing with rules only: %s", exc)
         return None

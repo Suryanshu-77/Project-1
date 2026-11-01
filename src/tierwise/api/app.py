@@ -15,7 +15,7 @@ from tierwise.api.errors import install_error_handlers
 from tierwise.api.routes import router
 from tierwise.budgets import Budgets, RateLimiter, month_of
 from tierwise.cache import SemanticCache
-from tierwise.config import Settings
+from tierwise.config import Settings, registry_file
 from tierwise.keys import KeyStore
 from tierwise.metrics import Metrics
 from tierwise.providers.anthropic import AnthropicProvider
@@ -45,7 +45,7 @@ def create_app(
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         tracing = configure_tracing(config.otel_exporter_otlp_endpoint)
         # Fail fast: an invalid registry stops startup instead of breaking requests later.
-        app.state.registry = registry or load_registry(config.registry_path)
+        app.state.registry = registry or load_registry(registry_file(config))
 
         # One pooled client per provider for the app's whole life: no per-request handshakes.
         clients: dict[str, httpx.AsyncClient] = {}
