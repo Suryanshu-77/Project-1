@@ -1,8 +1,9 @@
 """Champion/challenger gate for the flywheel retrain (spec §5.2).
 
 Both classifiers are scored on the same rows: how much of the all-strong cost they save at 95%
-of its quality (the curve over every threshold), and how many of the labeled hard prompts
-their chosen threshold would send to the cheap side.
+of its quality (the curve over every threshold), and how many of the labeled hard prompts the
+deployed router (rules plus that classifier) would send to a basic model; the caller counts
+those through the gateway's own route() and select().
 """
 
 import math
@@ -31,13 +32,13 @@ def _auc(scores: np.ndarray, positive: np.ndarray) -> float | None:
 
 
 def evaluate_classifier(
-    p_rows: np.ndarray, rows: Sequence[EvalRow], p_critical: np.ndarray, threshold: float
+    p_rows: np.ndarray, rows: Sequence[EvalRow], critical_misroutes: int
 ) -> GateResult:
     p_rows = np.asarray(p_rows, dtype=np.float64)
     needs_strong = np.array([row.q_cheap < 0.5 <= row.q_strong for row in rows])
     return GateResult(
         cost_saved_95=cost_saved_at(sweep(rows, p_rows), 0.95),
-        critical_misroutes=int((np.asarray(p_critical) < threshold).sum()),
+        critical_misroutes=critical_misroutes,
         auc=_auc(p_rows, needs_strong),
     )
 

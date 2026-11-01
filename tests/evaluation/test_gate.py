@@ -10,27 +10,24 @@ def _rows(needs_strong: list[bool]) -> list[EvalRow]:
             for i, hard in enumerate(needs_strong)]  # fmt: skip
 
 
-def test_evaluate_classifier_counts_critical_misroutes() -> None:
+def test_evaluate_classifier_scores_rows() -> None:
     rows = _rows([True, False, True, False])
     p_rows = np.array([0.9, 0.1, 0.8, 0.2])
-    p_critical = np.array([0.9, 0.3, 0.6, 0.1])  # two hard prompts under the 0.5 threshold
-    result = evaluate_classifier(p_rows, rows, p_critical, threshold=0.5)
+    result = evaluate_classifier(p_rows, rows, critical_misroutes=2)
     assert result.critical_misroutes == 2
     assert result.auc == 1.0  # every hard prompt scored above every easy one
     assert result.cost_saved_95 is not None and result.cost_saved_95 > 0.4
 
 
 def test_auc_is_none_with_one_class() -> None:
-    result = evaluate_classifier(np.array([0.2, 0.4]), _rows([False, False]), np.array([0.9]), 0.5)
+    result = evaluate_classifier(np.array([0.2, 0.4]), _rows([False, False]), 0)
     assert result.auc is None
 
 
 def test_random_scores_save_less_than_perfect_ones() -> None:
     needs = [i % 3 == 0 for i in range(60)]
-    perfect = evaluate_classifier(np.array([float(h) for h in needs]), _rows(needs),
-                                  np.array([1.0]), 0.5)  # fmt: skip
-    noise = evaluate_classifier(np.random.default_rng(0).random(60), _rows(needs),
-                                np.array([1.0]), 0.5)  # fmt: skip
+    perfect = evaluate_classifier(np.array([float(h) for h in needs]), _rows(needs), 0)
+    noise = evaluate_classifier(np.random.default_rng(0).random(60), _rows(needs), 0)
     assert perfect.cost_saved_95 is not None
     assert noise.cost_saved_95 is None or noise.cost_saved_95 < perfect.cost_saved_95
 

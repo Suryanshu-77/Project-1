@@ -41,7 +41,7 @@ expected to answer it well, across Anthropic, OpenAI, Gemini and local Ollama. I
 | M7b | Prometheus `/metrics`, OTel spans, Grafana dashboard, compose + Postgres | #10 | merged (all 5 CI checks green, incl. Postgres + `compose-smoke`) |
 | M8 | Packaged data, `tierwise fetch-model`, cancellation fix, release workflow, demo, docs | #11 | merged; **tierwise 0.8.0 is live on PyPI**, and the repo is public |
 | M9a | Shadow sampling (3 opt-ins), `tierwise flywheel label` (contrast + judge, monthly budget), fake judge | feat/flywheel | built |
-| M9b | Retrain, champion/challenger gate, versioned promotion | — | planned |
+| M9b | `training.retrain`, champion/challenger gate (critical misroutes on the deployed hybrid), versioned promotion, `flywheel-e2e` CI job, 0.9.0 | feat/retrain | built |
 
 `main` is at `e453895`: M0 through M7 are all merged. Version is now 0.8.0, and versions track milestones.
 
@@ -105,6 +105,7 @@ uv run python scripts/compose_smoke.py    # M7 exit check
   - the Grafana savings PromQL (M7b)
   - the `CancelledError` handler that releases the reservation (M8)
   - `sample_rate`: ×5 below confidence 0.5, clamped (M9a)
+  - `should_promote`: safety, then cost saved, with AUC breaking ties (M9b)
 - **Per milestone:**
   1. The superpowers flow: brainstorming → spec → `writing-plans` → **Native** execution
      with `executing-plans` (ledger under `.superpowers/sdd/<plan>/`, `task-start` and
@@ -127,7 +128,8 @@ uv run python scripts/compose_smoke.py    # M7 exit check
 
 ## Open threads and backlog
 
-- **Next:** M9a, then M9b. Plans: `docs/superpowers/plans/2026-11-02-tierwise-m9a.md` and `-m9b.md`.
+- **Next:** merge M9b, then tag `v0.9.0` (the user approves the publish job). All planned milestones
+  are then done; the deferred minors in each PR are the backlog.
 - **Known weaknesses worth knowing (each documented):**
   - **Out of distribution (SPROUT):** the learned router loses to rules at 98–99% quality.
     It learned *Mixtral's* weak spots, which motivates M9.

@@ -174,3 +174,12 @@ def test_default_embedder_finds_encoder_in_cache_dir(
     embed = retrain.default_embedder(_router(tmp_path))  # no model.onnx in the router dir
     vectors = embed([ChatRequest.model_validate({"messages": [{"role": "user", "content": "hi"}]})])
     assert vectors.shape == (1, 384)
+
+
+async def test_critical_check_uses_the_deployed_hybrid() -> None:
+    hard = retrain._critical(retrain.CRITICAL)
+    assert len(hard) == 10
+    # a classifier that calls every hard prompt easy: alone it misroutes all 10, but in the
+    # gateway the rules still raise the difficulty of textbook-hard prompts
+    assert await retrain.critical_misroutes(hard, np.zeros(10), 0.5, REGISTRY) < 10
+    assert await retrain.critical_misroutes(hard, np.ones(10), 0.5, REGISTRY) == 0

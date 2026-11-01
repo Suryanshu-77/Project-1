@@ -41,6 +41,17 @@ jobs:
           "$RUNNER_TEMP/wheel/bin/tierwise" --help
           "$RUNNER_TEMP/wheel/bin/python" "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
 
+  flywheel-e2e:  # the M9 exit check: sample, label, retrain and gate, end to end, at $0
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --group retrain
+      - run: uv run tierwise fetch-model
+      - run: uv run python scripts/flywheel_e2e.py
+
   compose-smoke:  # the M7 exit check: the whole stack up, traffic through it, dashboard live
     runs-on: ubuntu-latest
     steps:

@@ -21,19 +21,23 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import numpy as np
 
 from evaluation.datasets import load_gpt4_test
 from evaluation.gate import GateResult, evaluate_classifier, should_promote
 from evaluation.metrics import EvalRow
+from tierwise.affinity import AffinityTable
 from tierwise.config import Settings, registry_file, router_directory
 from tierwise.registry import ModelSpec, Registry, load_registry
+from tierwise.router import RoutingDecision
 from tierwise.router.classifier import Classifier
 from tierwise.router.encoder import OnnxEncoder, load_tokenizer
-from tierwise.router.learned import model_path
+from tierwise.router.learned import LearnedRouter, model_path, to_decision
+from tierwise.router.router import route
 from tierwise.schema import ChatRequest
+from tierwise.selector import select
 from tierwise.store import RequestLog, ShadowSample
 from tierwise.tokens import text_of
 from training.prepare_data import DATA_DIR, Split, normalize, split_of
@@ -117,6 +121,33 @@ def _critical(path: Path) -> list[str]:
     return [r["prompt"] for r in rows if r["label"] == "hard"]
 
 
+class _Scored:
+    """Stands in for LearnedRouter.decide with probabilities already computed for each prompt,
+    so the gateway's own route() applies rules, the shortcut and escalation unchanged."""
+
+    def __init__(self, p: dict[str, float], threshold: float) -> None:
+        self._p, self._threshold = p, threshold
+
+    async def decide(self, req: ChatRequest) -> RoutingDecision:
+        difficulty, confidence = to_decision(self._p[prompt_of(req)], self._threshold)
+        return RoutingDecision(difficulty=difficulty, confidence=confidence, source="learned")
+
+
+async def critical_misroutes(
+    prompts: list[str], p: np.ndarray, threshold: float, registry: Registry
+) -> int:
+    """Hard prompts the deployed router would send to a basic model with this classifier:
+    the same check as the CI critical gate, through route() and select()."""
+    scored = cast(LearnedRouter, _Scored(dict(zip(prompts, map(float, p), strict=True)), threshold))
+    providers = {m.provider for m in registry.models}
+    picks = 0
+    for prompt in prompts:
+        result = await route(_request(prompt), scored)
+        option = select(result, registry, providers, AffinityTable()).candidates[0]
+        picks += option.spec.tier == "basic"
+    return picks
+
+
 def _base(data_dir: Path, split: str) -> tuple[list[ChatRequest], list[int]]:
     path = data_dir / f"{split}.jsonl"
     if not path.exists():
@@ -190,20 +221,24 @@ async def run(
     config: dict[str, Any] = json.loads((router_dir / "router.json").read_text(encoding="utf-8"))
     dim = int(config["dim"])
     champion = Classifier.load(router_dir / "classifier.npz", expected_dim=dim)
+    champion_misroutes = await critical_misroutes(
+        critical_prompts, champion.predict_proba(x_critical), float(config["threshold"]), registry
+    )
     champion_result = evaluate_classifier(
-        champion.predict_proba(x_eval), eval_rows, champion.predict_proba(x_critical),
-        float(config["threshold"]),
-    )  # fmt: skip
+        champion.predict_proba(x_eval), eval_rows, champion_misroutes
+    )
 
     version = datetime.fromtimestamp(now(), UTC).strftime("%Y%m%dT%H%M%SZ")
     new = router_dir / "versions" / version
     new.mkdir(parents=True, exist_ok=True)
     np.savez(new / "classifier.npz", **export_weights(fitted.model))
     challenger = Classifier.load(new / "classifier.npz", expected_dim=dim)  # score what ships
+    challenger_misroutes = await critical_misroutes(
+        critical_prompts, challenger.predict_proba(x_critical), fitted.threshold, registry
+    )
     challenger_result = evaluate_classifier(
-        challenger.predict_proba(x_eval), eval_rows, challenger.predict_proba(x_critical),
-        fitted.threshold,
-    )  # fmt: skip
+        challenger.predict_proba(x_eval), eval_rows, challenger_misroutes
+    )
     decision, reason = should_promote(champion_result, challenger_result)
 
     metrics = {
