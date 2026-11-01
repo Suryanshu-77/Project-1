@@ -1,7 +1,7 @@
 # tierwise — Design Spec
 
 *Cost-aware, self-hosted LLM gateway with a learned router.*
-Date: 2026-11-01 · Status: revision 3. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path.
+Date: 2026-11-01 · Status: revision 4. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5).
 
 ## 1. Problem and goal
 Teams overpay by sending every request to a flagship model, or lose quality by defaulting to cheap ones. **tierwise** sits between applications and model providers and decides, per request, which model to use. It picks the **cheapest model expected to answer well enough**, and it measures whether that bet paid off.
@@ -109,6 +109,58 @@ def select(decision, req, registry, health, mode) -> list[ModelSpec]  # ordered 
 4. The cheapest model comes first. The rest form the **failover chain**, ending with models above the bar.
 5. An empty list raises `no_eligible_model`.
 
+### 3.5.1 Reasoning effort (milestone M3.5)
+Reasoning ("thinking") tokens are billed as output, so an easy request that runs at a model's default effort wastes the most expensive tokens in the request. The selector therefore chooses **a model and an effort level together**.
+
+**Normalized scale:** `minimal · low · medium · high · xhigh · max`. Each adapter translates a level into its provider's own control:
+
+| Provider | Request field | Thinking tokens reported in |
+|---|---|---|
+| Anthropic | `output_config.effort` | included in `output_tokens` (not reported separately) |
+| OpenAI | `reasoning_effort` | `completion_tokens_details.reasoning_tokens` (part of `completion_tokens`) |
+| Gemini | `generationConfig.thinkingConfig.thinkingLevel` | `usageMetadata.thoughtsTokenCount` |
+| Ollama | none | none |
+
+When the chosen level equals the model's provider default, the adapter sends nothing.
+
+**Registry.** A model may declare an `efforts` block. Without one, the model behaves as a single option at its default with zero thinking tokens.
+```yaml
+quality: 0.80                 # quality at the provider's default effort
+effort_in_cache_key: true     # changing effort invalidates this provider's prompt cache
+efforts:
+  default: high               # what the provider does when no effort is sent
+  levels:
+    low:    {quality: -0.08, thinking_tokens: 150}
+    medium: {quality: -0.03, thinking_tokens: 600}
+    high:   {quality:  0.00, thinking_tokens: 2000}
+```
+- **Validated at startup:** levels must come from the normalized scale, `default` must be one of the listed levels, and every `quality` shift must keep the effective quality within 0–1.
+- **Placeholder values:** the quality shifts and thinking-token estimates are uncalibrated until M5, which fits them from logged `tokens_reasoning` and benchmark scores.
+- **`effort_in_cache_key`** defaults to `false`. It is `true` for Anthropic, where a top-level effort change invalidates the cached conversation.
+
+**Selection.**
+1. **Expand:** every model that passes the §3.5 filter becomes one option per declared level, or a single default option if it has no `efforts` block.
+2. **Effective quality:** `clamp(model.quality + level.quality, 0, 1)`. This value is compared with the bar; the bar formula is unchanged.
+3. **Estimated cost:** the §3.5 cost formula plus `level.thinking_tokens × price_out`.
+4. **Order:** options that clear the bar by estimated cost, with ties going to the lower effort; then the remaining options by effective quality. The failover chain becomes a list of (model, effort) options.
+5. **Affinity** remembers the (model, effort) pair that served each prompt.
+   - For a model with `effort_in_cache_key: false`, any of its levels counts as warm.
+   - For a model with `effort_in_cache_key: true`, only the same level counts as warm. Another level is priced cold: the whole history at the full input rate.
+   - The selector therefore decides per turn whether a higher effort is worth the cache miss, so a long conversation tends to keep its effort level unless the bar requires more.
+6. **`tier:*` targets** choose the cheapest option within the tier.
+
+**Client-set effort.** `ChatRequest.reasoning_effort` (the OpenAI field name) is accepted on every request and always wins.
+- For `auto` and `tier` targets, only options at exactly that level are considered. If none is eligible, the result is 422 `no_eligible_model`.
+- For a concrete model id, the value is forwarded unchanged and the provider validates it.
+
+**Visibility.**
+- **Response header:** `X-Tierwise-Effort` carries the chosen level, or `default` when nothing was sent.
+- **Log columns:** request rows gain `effort` and `tokens_reasoning`.
+- **Usage:** gains `reasoning_tokens`, a subset of `output_tokens`, filled in where the provider reports it.
+- **Report:** `scripts/costs.py` adds a breakdown by effort level.
+
+**Schema upgrade.** SQLite's `create_all` never alters an existing table. At startup the request log compares `PRAGMA table_info(requests)` with the table definition and runs `ALTER TABLE … ADD COLUMN` for each missing nullable column. Existing rows are preserved and the operation is idempotent.
+
 ### 3.6 Reliability (`reliability/`)
 - **Retry.** Up to 2 retries with exponential backoff and jitter on `RetryableError`, for the same model.
 - **Failover.** After retries are exhausted, try the next candidate from the selector. Never fail over on `FatalError`.
@@ -196,6 +248,7 @@ A static `router_model` decays as traffic and the registry change, so tierwise k
 | M1 | Schema, Anthropic and OpenAI adapters, passthrough endpoint (explicit model) | OpenAI SDK call works for both providers |
 | M2 | Gemini and Ollama adapters, streaming, registry, cost accounting including cached-token pricing, SQLite log | 4 providers; logged cost matches provider-reported usage |
 | M3 | Rules router, selector with cache-aware cost and prefix affinity, overrides, `auto*` / `tier:*` modes | Labeled prompts route sensibly; long conversation stays on its warm model |
+| M3.5 | Reasoning effort: normalized levels, per-model `efforts` in the registry, joint (model, effort) selection, effort-aware affinity, client override, `reasoning_tokens` accounting, log column migration | Easy prompts run at the lowest eligible effort and labeled hard prompts at `medium` or above; an Anthropic effort change is priced as a cache miss; an M3 database upgrades in place |
 | M4 | Data prep, training, ONNX export, learned router | Beats rules on held-out test; p50 encoder+classifier < 10 ms |
 | M5 | Eval harness, Pareto plot, registry calibration, `BENCHMARK.md` | Resume numbers produced |
 | M6 | Retry, failover, two-level circuit breakers, stream hold-until-first-content, semantic cache | Fault-injection tests pass, including an early stream abort that fails over |
@@ -206,9 +259,11 @@ A static `router_model` decays as traffic and the registry change, so tierwise k
 ## 9. Learning hand-offs (`TODO(human)`)
 - M1: the `Provider` protocol method shape
 - M3: rule weights and thresholds
+- M3.5: expanding a model into its (model, effort) options: effective quality and thinking cost per level
 - M4: the confidence-escalation policy
 - M6: failover candidate ordering
 
 ## 10. Open items (resolved during build, not blocking)
 - Current prices and context windows for each model: verify against provider docs when writing `registry.yaml`.
+- Effort controls (M3.5): confirm the OpenAI `reasoning_effort` levels and the Gemini `thinkingLevel` values per model against the official API references when writing each model's `efforts` block. Third-party sources disagree; for example, Gemini Pro accepts only `low`/`high` while Flash also accepts `minimal`/`medium`.
 - Dataset availability and licenses for training and eval: verify at the start of M4. Fallback is a self-labeled set of about 500 prompts judged by a flagship model.
