@@ -58,37 +58,60 @@ def split_prefix(req: ChatRequest) -> tuple[str | None, int]:
 
 
 class AffinityTable:
-    """In-memory LRU of prefix hash -> {model id: when it last served that prefix}."""
+    """In-memory LRU of prefix hash -> {(model id, effort sent): when it last served it}."""
 
     def __init__(
         self, max_entries: int = 10_000, clock: Callable[[], float] = time.monotonic
     ) -> None:
-        self._entries: OrderedDict[str, dict[str, float]] = OrderedDict()
+        self._entries: OrderedDict[str, dict[tuple[str, str | None], float]] = OrderedDict()
         self._max_entries = max_entries
         self._clock = clock
 
-    def record(self, prefix_hash: str, model_id: str) -> None:
-        models = self._entries.pop(prefix_hash, {})
-        models[model_id] = self._clock()
-        self._entries[prefix_hash] = models
+    def record(self, prefix_hash: str, model_id: str, effort: str | None = None) -> None:
+        served = self._entries.pop(prefix_hash, {})
+        served[(model_id, effort)] = self._clock()
+        self._entries[prefix_hash] = served
         while len(self._entries) > self._max_entries:
             self._entries.popitem(last=False)
 
     def warm_models(self, prefix_hash: str | None) -> dict[str, float]:
-        if prefix_hash is None:
-            return {}
-        return dict(self._entries.get(prefix_hash, {}))
+        """Model id -> most recent time it served this prefix, at any effort."""
+        latest: dict[str, float] = {}
+        for (model_id, _), served_at in self._entries.get(prefix_hash or "", {}).items():
+            latest[model_id] = max(served_at, latest.get(model_id, served_at))
+        return latest
 
-    def is_warm(self, prefix_hash: str | None, model_id: str, ttl: int | None) -> bool:
-        served_at = self.warm_models(prefix_hash).get(model_id)
-        return served_at is not None and ttl is not None and self._clock() - served_at <= ttl
+    def is_warm(
+        self,
+        prefix_hash: str | None,
+        model_id: str,
+        ttl: int | None,
+        effort: str | None = None,
+        effort_matters: bool = False,
+    ) -> bool:
+        """Whether ``model_id`` still has this prefix cached.
+
+        Where effort is part of the provider's cache key, only the same effort counts.
+        """
+        if ttl is None:
+            return False
+        now = self._clock()
+        return any(
+            mid == model_id and (not effort_matters or used == effort) and now - at <= ttl
+            for (mid, used), at in self._entries.get(prefix_hash or "", {}).items()
+        )
 
     def longest_warm(
-        self, boundaries: Sequence[tuple[str, int]], model_id: str, ttl: int | None
+        self,
+        boundaries: Sequence[tuple[str, int]],
+        model_id: str,
+        ttl: int | None,
+        effort: str | None = None,
+        effort_matters: bool = False,
     ) -> int:
         """Estimated tokens of the longest boundary ``model_id`` has warm in its cache."""
         for prefix_hash, tokens in reversed(boundaries):
-            if self.is_warm(prefix_hash, model_id, ttl):
+            if self.is_warm(prefix_hash, model_id, ttl, effort, effort_matters):
                 return tokens
         return 0
 

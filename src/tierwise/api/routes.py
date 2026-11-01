@@ -107,7 +107,7 @@ def _choose(
         selection = select(result, registry, providers.keys(), affinity)
     except NoEligibleModel as exc:
         raise GatewayError(422, "no_eligible_model", exc.message) from exc
-    spec = selection.candidates[0]
+    spec = selection.candidates[0].spec  # effort wiring arrives in Task 6
     return spec, providers[spec.provider], selection.reason, selection.prompt_hash
 
 

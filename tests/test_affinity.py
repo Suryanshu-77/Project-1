@@ -119,3 +119,15 @@ def test_longest_warm_boundary_and_chain_incumbent() -> None:
     assert table.chain_incumbent(bounds, lambda _: 300) == "model-a"
     clock.now = 400
     assert table.chain_incumbent(bounds, lambda _: 300) is None
+
+
+def test_record_and_warm_by_effort() -> None:
+    table = AffinityTable(clock=FakeClock())
+    table.record("p", "model-a", "low")
+    # effort ignored: any recorded effort of the model is warm
+    assert table.is_warm("p", "model-a", 300, effort="high", effort_matters=False)
+    # effort part of the cache key: only the same effort is warm
+    assert table.is_warm("p", "model-a", 300, effort="low", effort_matters=True)
+    assert not table.is_warm("p", "model-a", 300, effort="high", effort_matters=True)
+    assert not table.is_warm("p", "model-a", 300, effort=None, effort_matters=True)
+    assert table.incumbent("p", lambda _: 300) == "model-a"

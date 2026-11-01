@@ -140,7 +140,7 @@ efforts:
 
 **Selection.**
 1. **Expand:** every model that passes the §3.5 filter becomes one option per declared level, or a single default option if it has no `efforts` block.
-2. **Effective quality:** `clamp(model.quality + level.quality, 0, 1)`. This value is compared with the bar; the bar formula is unchanged.
+2. **Effective quality:** `clamp(model.quality + shift, 0, 1)`, where `shift` is the level's registry value for effort at or above the default, and `level.quality × difficulty / 0.5` for a level below it. Low effort costs little on easy requests and a lot on hard ones, which a fixed shift cannot express: no single fixed penalty met both M3.5 exit checks. This value is compared with the bar; the bar formula is unchanged.
 3. **Estimated cost:** the §3.5 cost formula plus `level.thinking_tokens × price_out`.
 4. **Order:** options that clear the bar by estimated cost, with ties going to the lower effort; then the remaining options by effective quality. The failover chain becomes a list of (model, effort) options.
 5. **Affinity** remembers the (model, effort) pair that served each prompt.
