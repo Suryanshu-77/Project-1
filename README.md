@@ -233,6 +233,48 @@ log records it with cost 0 and the full baseline cost, so it counts toward savin
   exactly. That covers emoji, rare symbols, words over 100 characters, and anything over 256
   tokens.
 
+## Data flywheel
+
+The learned router was trained on someone else's traffic, so on prompts unlike that data it
+does worse than it should. The flywheel collects labels from **your** traffic, without
+changing anything a user receives.
+
+**1. Sample (in the gateway, free).** A routed answer is stored in `shadow_samples` only when
+all three of these opt-ins hold:
+
+| Opt-in | How |
+|---|---|
+| The gateway may store payloads | `TIERWISE_STORE_PAYLOADS=true` |
+| The key's owner agreed | `tierwise keys create --name team --allow-shadow` |
+| The router made a choice | `model` is `auto*` (not a fixed model or tier) |
+
+Only complete text answers are sampled; tool calls and cache hits never are.
+- **Rate:** `TIERWISE_SHADOW_RATE` (default 2%), and more often when the router wasn't sure.
+- **Off the request path:** samples go through the same queue as the request log, so a
+  request never waits for one.
+- **Metric:** `tierwise_shadow_samples_total` counts them.
+
+**2. Label (offline, paid).** Run:
+
+```bash
+tierwise flywheel label --limit 500
+```
+
+For each sample:
+1. A contrast model answers the same request. That is the flagship (`baseline_model`) if a
+   cheaper model answered, otherwise the cheapest basic model.
+2. A judge model (`TIERWISE_JUDGE_MODEL`, default the baseline model) sees both answers, in a
+   random order, and scores the cheaper one from 1 to 5. Below 4 means the prompt **needs a
+   strong model**, the same rule the original training labels used.
+
+Each label is two paid calls. The run stops at `TIERWISE_SHADOW_BUDGET_USD` (default $5) per
+calendar month, counting earlier runs. Against the compose stack's fake upstream it costs
+nothing: its fake judge scores hard-looking prompts 2 and easy ones 5.
+
+**Privacy:** samples store prompts and answers in your database, which is why collection
+needs three opt-ins. There is no purge command yet; delete rows from `shadow_samples`
+directly if you need to.
+
 ## Run the full stack
 
 One command starts the gateway with Postgres, Prometheus, Grafana and Jaeger, plus a fake

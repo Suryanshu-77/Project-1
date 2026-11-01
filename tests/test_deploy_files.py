@@ -152,3 +152,9 @@ def test_fake_upstream_judges_hard_prompts_low() -> None:
 
     assert score("Design a billing architecture") == 2
     assert score("Translate 'hello' into Spanish") == 5
+
+
+def test_compose_enables_payloads() -> None:
+    env = _compose()["services"]["gateway"]["environment"]
+    assert env["TIERWISE_STORE_PAYLOADS"] == "true"  # keys still need --allow-shadow
+    assert env["TIERWISE_SHADOW_RATE"] == "${TIERWISE_SHADOW_RATE:-0.02}"

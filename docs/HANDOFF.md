@@ -40,7 +40,8 @@ expected to answer it well, across Anthropic, OpenAI, Gemini and local Ollama. I
 | M7a | API keys + CLI, token-bucket rate limits, reserve/settle monthly budgets | #9 | merged |
 | M7b | Prometheus `/metrics`, OTel spans, Grafana dashboard, compose + Postgres | #10 | merged (all 5 CI checks green, incl. Postgres + `compose-smoke`) |
 | M8 | Packaged data, `tierwise fetch-model`, cancellation fix, release workflow, demo, docs | #11 | merged; **tierwise 0.8.0 is live on PyPI**, and the repo is public |
-| M9 | Data flywheel (spec §5.2): M9a collection, M9b learning | — | planned |
+| M9a | Shadow sampling (3 opt-ins), `tierwise flywheel label` (contrast + judge, monthly budget), fake judge | feat/flywheel | built |
+| M9b | Retrain, champion/challenger gate, versioned promotion | — | planned |
 
 `main` is at `e453895`: M0 through M7 are all merged. Version is now 0.8.0, and versions track milestones.
 
@@ -103,6 +104,7 @@ uv run python scripts/compose_smoke.py    # M7 exit check
   - `TokenBucket.take` (M7a)
   - the Grafana savings PromQL (M7b)
   - the `CancelledError` handler that releases the reservation (M8)
+  - `sample_rate`: ×5 below confidence 0.5, clamped (M9a)
 - **Per milestone:**
   1. The superpowers flow: brainstorming → spec → `writing-plans` → **Native** execution
      with `executing-plans` (ledger under `.superpowers/sdd/<plan>/`, `task-start` and
