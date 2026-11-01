@@ -18,6 +18,8 @@ from tierwise.providers.gemini import GeminiProvider
 from tierwise.providers.ollama import OllamaProvider
 from tierwise.providers.openai import OpenAIProvider
 from tierwise.registry import Registry, load_registry
+from tierwise.reliability.breaker import Breakers
+from tierwise.reliability.retry import RetryPolicy
 from tierwise.router.learned import load_learned
 from tierwise.store import RequestLog
 
@@ -60,6 +62,10 @@ def create_app(
         app.state.clients = clients
         app.state.providers = providers
         app.state.affinity = AffinityTable()
+        app.state.breakers = Breakers(
+            config.breaker_failures, config.breaker_window_s, config.breaker_cooldown_s
+        )
+        app.state.retry = RetryPolicy(config.retries, config.retry_base_s, config.retry_max_s)
 
         # Loading and warming the ONNX session blocks; keep it off the event loop.
         learned = await asyncio.to_thread(load_learned, config)

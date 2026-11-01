@@ -153,10 +153,11 @@ async def test_conversation_sticks_to_warm_model() -> None:
 
 
 async def test_failed_request_records_no_affinity() -> None:
-    state = {"fail": True}
+    state = {"fail": 3}  # every candidate the first request tries (failover stops at 3)
 
     def flaky(request: httpx.Request) -> httpx.Response:
-        if state.pop("fail", False):
+        if state["fail"] > 0:
+            state["fail"] -= 1
             return httpx.Response(503, text="down")
         return ok_upstream(request)
 

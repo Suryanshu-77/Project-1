@@ -3,6 +3,8 @@
 import logging
 import time
 import uuid
+from dataclasses import dataclass
+from functools import partial
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -14,9 +16,12 @@ from tierwise.costs import cost_usd
 from tierwise.options import Option
 from tierwise.providers.base import Provider, ProviderError
 from tierwise.registry import ModelSpec, Registry
+from tierwise.reliability.breaker import Breakers
+from tierwise.reliability.failover import serve
+from tierwise.reliability.retry import RetryPolicy, with_retries
 from tierwise.router.modes import VIRTUAL_MODELS, EmptyAfterTag, UnknownRoutingValue
 from tierwise.router.router import RoutingResult, route
-from tierwise.schema import ChatRequest, Usage
+from tierwise.schema import ChatRequest, ChatResponse, Usage
 from tierwise.selector import NoEligibleModel, select
 from tierwise.store import RequestLog, RequestRecord
 
@@ -56,6 +61,7 @@ class _Recorder:
         self.confidence: float | None = None
         self.prefix_hash: str | None = None
         self.effort: str | None = None
+        self.failover_count = 0
 
     def costs(self, usage: Usage | None) -> tuple[float | None, float | None]:
         if usage is None or self.spec is None:
@@ -84,29 +90,33 @@ class _Recorder:
                 confidence=self.confidence,
                 prefix_hash=self.prefix_hash,
                 effort=self.effort,
+                failover_count=self.failover_count,
                 tokens_reasoning=usage.reasoning_tokens if usage else None,
                 error_code=error_code,
             )
         )
 
 
-def _choose(
-    result: RoutingResult, state: object, recorder: _Recorder
-) -> tuple[ModelSpec, Provider, str, str | None, Option | None]:
-    """Pick the serving model and effort.
+@dataclass(frozen=True)
+class _Plan:
+    """What to call: a concrete model, or the selector's ordered candidates."""
 
-    Returns (spec, provider, reason, prompt hash to remember, chosen option); the option
-    is None for a concrete model id, which is served exactly as requested.
-    """
+    candidates: list[Option]
+    concrete: ModelSpec | None
+    reason: str
+    prompt_hash: str | None
+
+
+def _choose(result: RoutingResult, state: object, recorder: _Recorder) -> _Plan:
     registry: Registry = state.registry  # type: ignore[attr-defined]
     providers: dict[str, Provider] = state.providers  # type: ignore[attr-defined]
     affinity: AffinityTable = state.affinity  # type: ignore[attr-defined]
     target = result.target
     recorder.prefix_hash = split_prefix(result.request)[0]
     if target.kind == "model":
-        spec, provider = resolve(result.request.model, registry, providers)
+        spec, _ = resolve(result.request.model, registry, providers)
         boundaries = prefix_boundaries(result.request)
-        return spec, provider, "override", boundaries[-1][0] if boundaries else None, None
+        return _Plan([], spec, "override", boundaries[-1][0] if boundaries else None)
     recorder.mode = target.mode if target.kind == "auto" else f"tier:{target.tier}"
     if result.decision is not None:
         recorder.difficulty = result.decision.difficulty
@@ -115,9 +125,15 @@ def _choose(
         selection = select(result, registry, providers.keys(), affinity)
     except NoEligibleModel as exc:
         raise GatewayError(422, "no_eligible_model", exc.message) from exc
-    option = selection.candidates[0]
-    spec = option.spec
-    return spec, providers[spec.provider], selection.reason, selection.prompt_hash, option
+    return _Plan(selection.candidates, None, selection.reason, selection.prompt_hash)
+
+
+def _forward(request: ChatRequest, option: Option | None) -> tuple[ChatRequest, str | None, str]:
+    """(request to send, effort sent on the wire, X-Tierwise-Effort value)."""
+    if option is None:  # concrete model: forward the client's effort (if any) unchanged
+        return request, request.reasoning_effort, request.reasoning_effort or "default"
+    sent = option.wire_effort
+    return request.model_copy(update={"reasoning_effort": sent}), sent, option.header_value
 
 
 @router.post("/v1/chat/completions")
@@ -125,6 +141,9 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
     state = request.app.state
     recorder = _Recorder(state.log, state.registry, req.model, req.stream)
     affinity: AffinityTable = state.affinity
+    breakers: Breakers = state.breakers
+    policy: RetryPolicy = state.retry
+    providers: dict[str, Provider] = state.providers
     try:
         try:
             result = await route(req, state.learned)
@@ -132,39 +151,40 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             raise UnknownModel(req.model) from exc
         except EmptyAfterTag as exc:
             raise GatewayError(400, "invalid_request_error", str(exc)) from exc
-        spec, provider, reason, prompt_hash, option = _choose(result, state, recorder)
-        recorder.spec, recorder.model, recorder.source = spec, spec.id, reason
-        effort_header: str
-        if option is None:  # concrete model: forward the client's effort (if any) unchanged
-            forward = result.request
-            sent_effort = forward.reasoning_effort
-            effort_header = sent_effort or "default"
-        else:
-            sent_effort = option.wire_effort
-            forward = result.request.model_copy(update={"reasoning_effort": sent_effort})
-            effort_header = option.header_value
-        # log the level that actually ran (the model's default when nothing was sent)
-        recorder.effort = sent_effort if option is None else option.effort
-        headers = {
-            "X-Tierwise-Model": spec.id,
-            "X-Tierwise-Provider": provider.name,
-            "X-Tierwise-Reason": reason,
-            "X-Tierwise-Request-Id": recorder.request_id,
-            "X-Tierwise-Effort": effort_header,
-        }
+        plan = _choose(result, state, recorder)
+        recorder.source = plan.reason
 
-        def remember() -> None:
-            if prompt_hash is not None:
-                affinity.record(prompt_hash, spec.id, sent_effort)
+        def served_by(spec: ModelSpec, option: Option | None, failovers: int) -> dict[str, str]:
+            _, sent_effort, effort_header = _forward(result.request, option)
+            recorder.spec, recorder.model, recorder.failover_count = spec, spec.id, failovers
+            # log the level that actually ran (the model's default when nothing was sent)
+            recorder.effort = sent_effort if option is None else option.effort
+            return {
+                "X-Tierwise-Model": spec.id,
+                "X-Tierwise-Provider": spec.provider,
+                "X-Tierwise-Reason": plan.reason,
+                "X-Tierwise-Request-Id": recorder.request_id,
+                "X-Tierwise-Effort": effort_header,
+                "X-Tierwise-Failovers": str(failovers),
+            }
 
-        if forward.stream:
+        def remember(spec: ModelSpec, option: Option | None) -> None:
+            if plan.prompt_hash is not None:
+                affinity.record(plan.prompt_hash, spec.id, _forward(result.request, option)[1])
+
+        if result.request.stream:
+            # Streams fail over in M6 Task 4; until then the first candidate serves alone.
+            option = plan.candidates[0] if plan.concrete is None else None
+            spec = plan.concrete or plan.candidates[0].spec
+            headers = served_by(spec, option, 0)
+            forward = _forward(result.request, option)[0]
 
             def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
                 recorder.done(usage, status, code)
                 if status == 200:
-                    remember()
+                    remember(spec, option)
 
-            chunks = provider.stream(forward, spec.wire_id)
+            chunks = providers[spec.provider].stream(forward, spec.wire_id)
             try:
                 # Wait for the first chunk so early failures become ordinary HTTP errors.
                 first = await anext(chunks, None)
@@ -180,7 +200,30 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 include_usage=bool((forward.stream_options or {}).get("include_usage")),
                 on_done=stream_done,
             )
-        response = await provider.chat(forward, spec.wire_id)
+
+        if plan.concrete is not None:
+            spec, option, failovers = plan.concrete, None, 0
+            forward = _forward(result.request, None)[0]
+            served_by(spec, None, 0)  # so an error is logged against this model
+            try:
+                response = await with_retries(
+                    partial(providers[spec.provider].chat, forward, spec.wire_id), policy
+                )
+            except ProviderError as exc:
+                breakers.record(spec.provider, spec.id, exc)
+                raise
+            breakers.record(spec.provider, spec.id, None)
+        else:
+
+            async def attempt(candidate: Option) -> ChatResponse:
+                outgoing = _forward(result.request, candidate)[0]
+                provider = providers[candidate.spec.provider]
+                return await provider.chat(outgoing, candidate.spec.wire_id)
+
+            served = await serve(plan.candidates, attempt, breakers, policy)
+            response, option, failovers = served.value, served.option, served.failovers
+            spec = option.spec
+        headers = served_by(spec, option, failovers)
     except (GatewayError, ProviderError) as exc:
         err = exc if isinstance(exc, GatewayError) else gateway_error_from(exc)
         recorder.done(None, err.status, err.code)
@@ -193,7 +236,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
         raise GatewayError(500, "internal_error", message, "api_error") from exc
     cost, _ = recorder.costs(response.usage)
     recorder.done(response.usage, 200, None)
-    remember()
+    remember(spec, option)
     if cost is not None:
         headers["X-Tierwise-Cost-USD"] = f"{cost:.6f}"
     return JSONResponse(response.to_openai(), headers=headers)
