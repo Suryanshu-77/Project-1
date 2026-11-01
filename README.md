@@ -172,8 +172,15 @@ log records it with cost 0 and the full baseline cost, so it counts toward savin
 - **Threshold:** 0.95 is deliberately strict. "What's the capital of France?" and "What is
   the capital of France?" score 0.91 and miss, while two phrasings of a coding question
   score 0.98 and hit. Lower `CACHE_SIMILARITY` for more hits at more risk.
-- **Requirements:** the learned router's ONNX encoder must be present. Set
-  `TIERWISE_CACHE=false` to turn the cache off.
+- **Off by default.** Turn it on with `TIERWISE_CACHE=true`. It also needs the learned
+  router's ONNX encoder.
+- **Known limit:** sentence embeddings barely register negation or direction. "Is it safe to
+  mix bleach and ammonia?" and "Is it unsafe…" score 0.99; "Convert 100 USD to EUR" and
+  "EUR to USD" score 0.98. Only enable the cache for traffic where such near-duplicates
+  really do share an answer, such as FAQ bots or repeated batch prompts.
+- **Never matched by meaning:** text the encoder can't represent faithfully is matched
+  exactly. That covers emoji, rare symbols, words over 100 characters, and anything over 256
+  tokens.
 
 ## Providers
 

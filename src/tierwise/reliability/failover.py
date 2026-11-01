@@ -56,13 +56,23 @@ async def serve[T](
     attempt: Callable[[Option], Awaitable[T]],
     breakers: Breakers,
     policy: RetryPolicy,
+    *,
+    clear_count: int | None = None,
+    record_success: bool = True,
 ) -> Served[T]:
-    remaining = list(candidates)
+    """Try candidates in order. With `clear_count`, the first that many clear the quality bar,
+    and failover reorders within each group, so a below-bar model never jumps the queue.
+
+    `record_success=False` leaves the success verdict to the caller (a stream is only a
+    success once it has finished, not when it starts).
+    """
+    split = len(candidates) if clear_count is None else clear_count
+    groups = [list(candidates[:split]), list(candidates[split:])]
     skipped: list[str] = []
     attempted = 0
     last_error: ProviderError | None = None
-    while remaining and attempted < MAX_MODELS:
-        option = remaining.pop(0)
+    while any(groups) and attempted < MAX_MODELS:
+        option = next(group for group in groups if group).pop(0)
         provider, model_id = option.spec.provider, option.spec.id
         if not breakers.acquire(provider, model_id):
             skipped.append(f"{provider}/{model_id}")
@@ -75,14 +85,15 @@ async def serve[T](
             if isinstance(exc, FatalError):
                 raise  # the request is bad; another model won't fix it
             last_error = exc
-            remaining = next_candidates(remaining, option, exc)
+            groups = [next_candidates(group, option, exc) for group in groups]
             continue
         except BaseException:
             # cancelled or a bug: no verdict on the upstream, so give back any probe we hold
             breakers.provider(provider).release()
             breakers.model(provider, model_id).release()
             raise
-        breakers.record(provider, model_id, None)
+        if record_success:
+            breakers.record(provider, model_id, None)
         return Served(value, option, attempted - 1)
     if last_error is not None:
         raise last_error

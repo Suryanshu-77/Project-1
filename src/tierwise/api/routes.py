@@ -123,6 +123,7 @@ class _Plan:
     concrete: ModelSpec | None
     reason: str
     prompt_hash: str | None
+    clear_count: int | None = None
 
 
 def _choose(result: RoutingResult, state: object, recorder: _Recorder) -> _Plan:
@@ -143,7 +144,13 @@ def _choose(result: RoutingResult, state: object, recorder: _Recorder) -> _Plan:
         selection = select(result, registry, providers.keys(), affinity)
     except NoEligibleModel as exc:
         raise GatewayError(422, "no_eligible_model", exc.message) from exc
-    return _Plan(selection.candidates, None, selection.reason, selection.prompt_hash)
+    return _Plan(
+        selection.candidates,
+        None,
+        selection.reason,
+        selection.prompt_hash,
+        selection.clear_count,
+    )
 
 
 def _forward(request: ChatRequest, option: Option | None) -> tuple[ChatRequest, str | None, str]:
@@ -268,10 +275,14 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 except ProviderError as exc:
                     breakers.record(spec.provider, spec.id, exc)
                     raise
-                breakers.record(spec.provider, spec.id, None)
             else:
                 streamed = await serve(
-                    plan.candidates, lambda c: open_stream(c, c.spec), breakers, policy
+                    plan.candidates,
+                    lambda c: open_stream(c, c.spec),
+                    breakers,
+                    policy,
+                    clear_count=plan.clear_count,
+                    record_success=False,  # stream_done gives the verdict when it ends
                 )
                 primed, option, failovers = streamed.value, streamed.option, streamed.failovers
                 spec = option.spec
@@ -283,6 +294,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
                 recorder.done(usage, status, code)
                 if status == 200:
+                    breakers.record(spec.provider, spec.id, None)
                     remember(spec, option)
                     if usage is not None:
                         text = "".join(c.content or "" for c in streamed_chunks)
@@ -293,6 +305,9 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 elif status == STATUS_UPSTREAM_FAILED_MID_STREAM:  # failed after first content
                     failure = RetryableError(spec.provider, None, code or "mid-stream failure")
                     breakers.record(spec.provider, spec.id, failure)
+                else:  # the client left: no verdict on the upstream, give back any probe
+                    breakers.provider(spec.provider).release()
+                    breakers.model(spec.provider, spec.id).release()
 
             return sse_response(
                 primed,
@@ -323,7 +338,9 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 provider = providers[candidate.spec.provider]
                 return await provider.chat(outgoing, candidate.spec.wire_id)
 
-            served = await serve(plan.candidates, attempt, breakers, policy)
+            served = await serve(
+                plan.candidates, attempt, breakers, policy, clear_count=plan.clear_count
+            )
             response, option, failovers = served.value, served.option, served.failovers
             spec = option.spec
         headers = served_by(spec, option, failovers)

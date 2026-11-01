@@ -114,3 +114,17 @@ async def test_early_stream_abort_fails_over_end_to_end(tmp_path: Path) -> None:
     assert calls == [OPENAI, "ollama.test"]
     [row] = await app.state.log.fetch_all()
     assert (row.status, row.failover_count, row.model) == (200, 1, "local")
+
+
+async def test_streams_failing_after_first_content_trip_the_breaker() -> None:
+    def upstream(request: httpx.Request) -> httpx.Response:
+        if request.url.host == OPENAI:  # content first, then a broken event, every time
+            return sse(openai_chunk({"content": "po"}), done=False, raw_tail=b"data: {x\n\n")
+        return sse(openai_chunk({"content": "pong"}), openai_chunk({}, "stop"))
+
+    async with gateway(upstream, registry=THREE) as (app, client):
+        for _ in range(5):
+            await client.post("/v1/chat/completions", json={**HI, "stream": True})
+        assert app.state.breakers.model("openai", "cheap").state == "open"
+        after = await client.post("/v1/chat/completions", json={**HI, "stream": True})
+    assert after.headers["X-Tierwise-Model"] != "cheap"  # skipped; its sibling may serve

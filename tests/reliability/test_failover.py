@@ -122,3 +122,14 @@ def test_model_failure_tries_other_providers_before_siblings() -> None:
     gem = _opt("gemini", "flash")
     remaining = next_candidates([SONNET, MINI, HAIKU, gem], OPUS_LOW, error)
     assert remaining == [MINI, gem, SONNET, HAIKU]
+
+
+async def test_failover_stays_above_the_bar_first() -> None:
+    sonnet, opus = _opt("anthropic", "sonnet"), _opt("anthropic", "opus")
+    mini, llama = _opt("openai", "mini"), _opt("ollama", "llama")
+    calls, attempt = _attempt({"sonnet": RetryableError("anthropic", 429, "slow")})
+    served = await serve(
+        [sonnet, opus, mini, llama], attempt, Breakers(), NO_RETRY, clear_count=2
+    )
+    # opus clears the quality bar; mini and llama don't, even though they're other providers
+    assert calls == ["sonnet", "opus"] and served.value == "opus"

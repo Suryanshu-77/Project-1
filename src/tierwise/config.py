@@ -38,7 +38,7 @@ class Settings(BaseSettings):
     stream_hold_s: float = 3.0
     stream_hold_bytes: int = 4096
     cache_enabled: bool = Field(
-        default=True, validation_alias=AliasChoices("TIERWISE_CACHE", "cache_enabled")
+        default=False, validation_alias=AliasChoices("TIERWISE_CACHE", "cache_enabled")
     )
     cache_similarity: float = 0.95
     cache_ttl_s: float = 3600

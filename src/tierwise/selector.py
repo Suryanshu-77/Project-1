@@ -38,6 +38,7 @@ class Selection:
     bar: float | None
     prefix_hash: str | None  # the conversation so far (for the log)
     prompt_hash: str | None  # the whole prompt; record it for the model that serves it
+    clear_count: int | None = None  # candidates[:clear_count] clear the bar (None: all)
 
 
 def quality_bar(difficulty: float, confidence: float, mode: Mode) -> float:
@@ -152,7 +153,7 @@ def select(
     if incumbent is not None and cost[id(incumbent)] <= AFFINITY_SLACK * cost[id(clear[0])]:
         clear = [incumbent, *(o for o in clear if o is not incumbent)]
         reason = "affinity"
-    return Selection([*clear, *below], reason, bar, prefix_hash, prompt_hash)
+    return Selection([*clear, *below], reason, bar, prefix_hash, prompt_hash, len(clear))
 
 
 def _ttl(registry: Registry, model_id: str) -> int | None:

@@ -142,3 +142,20 @@ def test_cacheable_rules(
     headers: dict[str, str], expected: bool,
 ) -> None:  # fmt: skip
     assert cacheable(_result(messages, model, **extra), headers, 0.3) is expected
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [{"max_tokens": 20}, {"max_completion_tokens": 20}, {"stop": ["\n"]},
+     {"reasoning_effort": "high"}, {"top_p": 0.1}],
+)  # fmt: skip
+def test_scope_includes_answer_shaping_fields(extra: dict[str, Any]) -> None:
+    assert scope_key(_result([USER], temperature=0, **extra)) != scope_key(
+        _result([USER], temperature=0)
+    )
+
+
+def test_cache_is_opt_in() -> None:
+    from tierwise.config import Settings
+
+    assert Settings(_env_file=None).cache_enabled is False  # type: ignore[call-arg]

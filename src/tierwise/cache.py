@@ -74,6 +74,12 @@ def scope_key(result: RoutingResult) -> str:
         "caps": sorted(result.required_caps),
         "earlier": earlier,
         "response_format": result.request.response_format,
+        # fields that change the answer itself, or (effort) how it was produced
+        "max_tokens": result.request.max_tokens,
+        "max_completion_tokens": result.request.max_completion_tokens,
+        "stop": result.request.stop,
+        "top_p": result.request.top_p,
+        "reasoning_effort": result.request.reasoning_effort,
     }
     return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
