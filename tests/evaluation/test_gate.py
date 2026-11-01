@@ -64,3 +64,20 @@ def test_none_cost_saved_counts_as_worst(champion_saved: float | None) -> None:
 def test_tie_is_deterministic() -> None:
     first = should_promote(GOOD, GOOD)
     assert first == should_promote(GOOD, GOOD) and first[1]
+
+
+def test_decide_rejects_a_classifier_that_calls_more_hard_prompts_easy() -> None:
+    from evaluation.gate import decide
+
+    champion = GateResult(0.50, 0, 0.80, classifier_misroutes=2)
+    louder = GateResult(0.90, 0, 0.95, classifier_misroutes=3)  # the rules hide it in routing
+    promote, reason = decide(champion, louder)
+    assert not promote and "3" in reason and "2" in reason
+
+
+def test_decide_defers_to_should_promote_otherwise() -> None:
+    from evaluation.gate import decide
+
+    champion = GateResult(0.50, 0, 0.80, classifier_misroutes=2)
+    better = GateResult(0.60, 0, 0.80, classifier_misroutes=2)
+    assert decide(champion, better) == should_promote(champion, better)

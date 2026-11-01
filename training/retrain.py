@@ -5,13 +5,15 @@ Usage: uv run --group retrain python -m training.retrain [--db-url URL] [--route
 
 Labeled shadow samples (from `tierwise flywheel label`) are split by prompt hash like the base
 dataset, merged with training/data when it exists, and a challenger is fitted. Champion and
-challenger score the same held-out rows; `evaluation.gate.should_promote` decides. Every
-challenger is kept in <router-dir>/versions/<UTC timestamp>/; promoting copies it over the
-router dir (the replaced champion is kept too). The gateway loads it on its next restart.
+challenger score the same held-out rows; `evaluation.gate.decide` decides. Every challenger
+is kept, write-once, in <router-dir>/versions/<UTC timestamp>/. Promoting is one atomic replace
+of router.json, which names its version's weights; an unversioned champion is first archived
+under its content hash. The gateway loads the new router on its next restart.
 """
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -26,7 +28,7 @@ from typing import Any, cast
 import numpy as np
 
 from evaluation.datasets import load_gpt4_test
-from evaluation.gate import GateResult, evaluate_classifier, should_promote
+from evaluation.gate import GateResult, decide, evaluate_classifier
 from evaluation.metrics import EvalRow
 from tierwise.affinity import AffinityTable
 from tierwise.config import Settings, registry_file, router_directory
@@ -34,7 +36,7 @@ from tierwise.registry import ModelSpec, Registry, load_registry
 from tierwise.router import RoutingDecision
 from tierwise.router.classifier import Classifier
 from tierwise.router.encoder import OnnxEncoder, load_tokenizer
-from tierwise.router.learned import LearnedRouter, model_path, to_decision
+from tierwise.router.learned import LearnedRouter, model_path, to_decision, weights_path
 from tierwise.router.router import route
 from tierwise.schema import ChatRequest
 from tierwise.selector import select
@@ -44,8 +46,8 @@ from training.prepare_data import DATA_DIR, Split, normalize, split_of
 from training.train import _embed, _request, export_weights, fit
 
 MIN_LABELS = 20
+MIN_HELD_OUT = 20  # rows, with both labels, before a promotion can rest on them
 CRITICAL = Path(__file__).parents[1] / "tests" / "router" / "labeled_prompts.jsonl"
-FILES = ("classifier.npz", "metrics.json", "router.json")  # router.json last: it names the rest
 Embed = Callable[[list[ChatRequest]], np.ndarray]
 
 
@@ -156,18 +158,54 @@ def _base(data_dir: Path, split: str) -> tuple[list[ChatRequest], list[int]]:
     return [_request(r["prompt"]) for r in rows], [int(r["label"]) for r in rows]
 
 
-def _promote(router_dir: Path, new: Path, champion_version: str | None) -> None:
-    """Keep the champion in versions/, then swap each file in with an atomic replace."""
-    old = router_dir / "versions" / (champion_version or "initial")
-    if not old.exists():
-        old.mkdir(parents=True)
-        for name in FILES:
-            if (router_dir / name).exists():
-                shutil.copy2(router_dir / name, old / name)
-    for name in FILES:
-        tmp = router_dir / f"{name}.tmp"
-        shutil.copy2(new / name, tmp)
-        os.replace(tmp, router_dir / name)
+def _write_json(path: Path, data: dict[str, Any]) -> None:
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+
+
+def _new_version_dir(versions: Path, version: str) -> Path:
+    """Versions are write-once: router.json files point into them."""
+    for suffix in ("", *(f"-{i}" for i in range(1, 100))):
+        target = versions / f"{version}{suffix}"
+        try:
+            target.mkdir(parents=True)
+            return target
+        except FileExistsError:
+            continue
+    raise RuntimeError(f"too many versions named {version}")
+
+
+def _archive_unversioned(router_dir: Path, config: dict[str, Any]) -> None:
+    """Keep a champion that doesn't live in versions/ yet (the shipped router, or one from
+    training/train.py), keyed by its weights' hash so two different ones never collide."""
+    weights = weights_path(router_dir, config)
+    name = "initial-" + hashlib.sha256(weights.read_bytes()).hexdigest()[:12]
+    target = router_dir / "versions" / name
+    if target.exists():
+        return
+    staging = target.with_name(name + ".partial")
+    shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+    shutil.copy2(weights, staging / "classifier.npz")
+    if (router_dir / "metrics.json").exists():
+        shutil.copy2(router_dir / "metrics.json", staging / "metrics.json")
+    archived = {**config, "version": name, "weights": f"versions/{name}/classifier.npz"}
+    _write_json(staging / "router.json", archived)
+    staging.rename(target)
+
+
+def _promote(router_dir: Path, new: Path, champion: dict[str, Any]) -> None:
+    """One os.replace of router.json is the commit point: before it the champion routes,
+    after it the challenger does, never a mix of the two."""
+    if "weights" not in champion:
+        _archive_unversioned(router_dir, champion)
+    tmp = router_dir / "router.json.tmp"
+    shutil.copy2(new / "router.json", tmp)
+    try:
+        os.replace(tmp, router_dir / "router.json")
+    except OSError:
+        tmp.unlink(missing_ok=True)
+        raise
+    shutil.copy2(new / "metrics.json", router_dir / "metrics.json")  # informational only
 
 
 async def run(
@@ -220,26 +258,35 @@ async def run(
 
     config: dict[str, Any] = json.loads((router_dir / "router.json").read_text(encoding="utf-8"))
     dim = int(config["dim"])
-    champion = Classifier.load(router_dir / "classifier.npz", expected_dim=dim)
+    champion = Classifier.load(weights_path(router_dir, config), expected_dim=dim)
     champion_misroutes = await critical_misroutes(
         critical_prompts, champion.predict_proba(x_critical), float(config["threshold"]), registry
     )
+    champion_p_critical = champion.predict_proba(x_critical)
     champion_result = evaluate_classifier(
-        champion.predict_proba(x_eval), eval_rows, champion_misroutes
-    )
+        champion.predict_proba(x_eval), eval_rows, champion_misroutes,
+        int((champion_p_critical < float(config["threshold"])).sum()),
+    )  # fmt: skip
 
     version = datetime.fromtimestamp(now(), UTC).strftime("%Y%m%dT%H%M%SZ")
-    new = router_dir / "versions" / version
-    new.mkdir(parents=True, exist_ok=True)
+    new = _new_version_dir(router_dir / "versions", version)
+    version = new.name
     np.savez(new / "classifier.npz", **export_weights(fitted.model))
     challenger = Classifier.load(new / "classifier.npz", expected_dim=dim)  # score what ships
     challenger_misroutes = await critical_misroutes(
         critical_prompts, challenger.predict_proba(x_critical), fitted.threshold, registry
     )
+    challenger_p_critical = challenger.predict_proba(x_critical)
     challenger_result = evaluate_classifier(
-        challenger.predict_proba(x_eval), eval_rows, challenger_misroutes
-    )
-    decision, reason = should_promote(champion_result, challenger_result)
+        challenger.predict_proba(x_eval), eval_rows, challenger_misroutes,
+        int((challenger_p_critical < fitted.threshold).sum()),
+    )  # fmt: skip
+    labels_held_out = {row.q_cheap < 0.5 for row in eval_rows}
+    if len(eval_rows) < MIN_HELD_OUT or len(labels_held_out) < 2:
+        decision, reason = False, (f"rejected: only {len(eval_rows)} held-out rows; promotion "
+                                   f"needs {MIN_HELD_OUT} with both labels")  # fmt: skip
+    else:
+        decision, reason = decide(champion_result, challenger_result)
 
     metrics = {
         "version": version, "kind": fitted.kind, "threshold": fitted.threshold,
@@ -247,13 +294,15 @@ async def run(
         "n_eval": len(eval_rows), "decision": decision, "reason": reason,
         "champion": asdict(champion_result), "challenger": asdict(challenger_result),
     }  # fmt: skip
-    (new / "metrics.json").write_text(json.dumps(metrics, indent=2) + "\n", encoding="utf-8")
-    router_json = {**config, "threshold": fitted.threshold, "kind": fitted.kind, "version": version}
-    (new / "router.json").write_text(json.dumps(router_json, indent=2) + "\n", encoding="utf-8")
+    _write_json(new / "metrics.json", metrics)
+    _write_json(new / "router.json", {
+        **config, "threshold": fitted.threshold, "kind": fitted.kind, "version": version,
+        "weights": f"versions/{version}/classifier.npz",
+    })  # fmt: skip
 
     promoted = decision and promote
     if promoted:
-        _promote(router_dir, new, config.get("version"))
+        _promote(router_dir, new, config)
     return RetrainReport(decision, reason, champion_result, challenger_result, version,
                          promoted, n_labels)  # fmt: skip
 

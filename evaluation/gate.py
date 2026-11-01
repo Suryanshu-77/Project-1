@@ -18,8 +18,9 @@ from evaluation.metrics import EvalRow, cost_saved_at, sweep
 @dataclass(frozen=True)
 class GateResult:
     cost_saved_95: float | None  # None: no threshold reaches 95% of all-strong quality
-    critical_misroutes: int
+    critical_misroutes: int  # through the deployed router (rules can only raise difficulty)
     auc: float | None  # None when the rows hold a single class
+    classifier_misroutes: int = 0  # hard prompts the classifier alone calls easy
 
 
 def _auc(scores: np.ndarray, positive: np.ndarray) -> float | None:
@@ -32,7 +33,10 @@ def _auc(scores: np.ndarray, positive: np.ndarray) -> float | None:
 
 
 def evaluate_classifier(
-    p_rows: np.ndarray, rows: Sequence[EvalRow], critical_misroutes: int
+    p_rows: np.ndarray,
+    rows: Sequence[EvalRow],
+    critical_misroutes: int,
+    classifier_misroutes: int = 0,
 ) -> GateResult:
     p_rows = np.asarray(p_rows, dtype=np.float64)
     needs_strong = np.array([row.q_cheap < 0.5 <= row.q_strong for row in rows])
@@ -40,6 +44,7 @@ def evaluate_classifier(
         cost_saved_95=cost_saved_at(sweep(rows, p_rows), 0.95),
         critical_misroutes=critical_misroutes,
         auc=_auc(p_rows, needs_strong),
+        classifier_misroutes=classifier_misroutes,
     )
 
 
@@ -77,3 +82,13 @@ def should_promote(champion: GateResult, challenger: GateResult) -> tuple[bool, 
         return True, f"promoted on tie: AUC {chall_auc:.3f} vs {champ_shown}"
 
     return False, "rejected on tie: no improvement in cost or AUC"
+
+
+def decide(champion: GateResult, challenger: GateResult) -> tuple[bool, str]:
+    """The whole gate. The rules can only raise difficulty, so `critical_misroutes` (through
+    the deployed router) is a floor the rules guarantee; this first refuses a challenger whose
+    classifier alone calls more hard prompts easy than the champion's, then asks should_promote."""
+    if challenger.classifier_misroutes > champion.classifier_misroutes:
+        return False, (f"rejected: the classifier calls {challenger.classifier_misroutes} hard "
+                       f"prompts easy, the champion's {champion.classifier_misroutes}")  # fmt: skip
+    return should_promote(champion, challenger)

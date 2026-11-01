@@ -6,7 +6,7 @@
 
 - **Sample:** opted-in routed answers go into `shadow_samples`. That needs three opt-ins: `TIERWISE_STORE_PAYLOADS`, a key created with `--allow-shadow`, and an `auto*` request. Routes the router was unsure about are sampled 5× more.
 - **Label:** `tierwise flywheel label` gets a contrast answer, then has a judge score the cheaper answer from 1 to 5, under a monthly budget. Both calls are retried, and empty, cut-off or tool-call contrast answers are never labeled.
-- **Retrain:** `python -m training.retrain` trains a challenger. It's promoted only if it has zero critical misroutes on the deployed router and saves at least as much at 95% quality; on a cost tie, the better AUC wins. Every version is kept in `models/router/versions/`. `/healthz` reports `router_version`.
+- **Retrain:** `python -m training.retrain` trains a challenger. It's promoted only if all of these hold: at least 20 held-out rows of both labels, zero critical misroutes on the deployed router, no more hard prompts called easy by the classifier than the champion, and at least the champion's cost saved. On a cost tie, the better AUC wins. Versions are write-once in `models/router/versions/`, and promotion is a single atomic replace of `router.json`, which names its own weights. `/healthz` reports `router_version`.
 - **CI:** a new `flywheel-e2e` job runs the whole loop against the fake upstream.
 
 ## 0.8.0 — 2026-11-02

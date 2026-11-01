@@ -76,7 +76,7 @@ async def _run(tmp_path: Path, samples: list[ShadowSample], promote: bool = True
                      now=lambda: NOW)  # fmt: skip
 
 
-def _samples(n: int = 200) -> list[ShadowSample]:
+def _samples(n: int = 400) -> list[ShadowSample]:
     return [_labeled(i, p, hard) for i, (p, hard) in enumerate(_prompts(n))]
 
 
@@ -87,7 +87,7 @@ def test_shadow_rows_split_by_prompt_hash() -> None:
         for r in rows:
             assert split == split_of(r.prompt)
             assert seen.setdefault(r.prompt, split) == split  # never in two splits
-    assert sum(len(rows) for rows in splits.values()) == 200
+    assert sum(len(rows) for rows in splits.values()) == 400
 
 
 def test_shadow_eval_rows_price_cheap_and_strong() -> None:
@@ -117,30 +117,83 @@ async def test_dry_run_writes_version_but_not_router_dir(tmp_path: Path) -> None
     assert {p.name for p in (router / "versions" / report.version).iterdir()} == set(FILES)
     for name in FILES:  # the champion is untouched
         assert (router / name).read_bytes() == (ROOT / "models" / "router" / name).read_bytes()
-    assert report.reason and report.n_labels == 200
+    assert report.reason and report.n_labels == 400
 
 
-async def test_promote_replaces_three_files_and_keeps_old_champion(
+async def test_promote_commits_by_pointing_router_json_at_the_version(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(retrain, "should_promote", lambda champ, chall: (True, "forced"))
+    monkeypatch.setattr(retrain, "decide", lambda champ, chall: (True, "forced"))
     report = await _run(tmp_path, _samples())
     router = tmp_path / "router"
     assert report.decision and report.promoted and report.reason == "forced"
-    new = router / "versions" / report.version
-    for name in FILES:
-        assert (router / name).read_bytes() == (new / name).read_bytes()
-    assert json.loads((router / "router.json").read_text())["version"] == report.version
-    old = router / "versions" / "initial"  # the shipped champion had no version
-    for name in FILES:
-        assert (old / name).read_bytes() == (ROOT / "models" / "router" / name).read_bytes()
+    config = json.loads((router / "router.json").read_text())
+    assert config["version"] == report.version
+    assert config["weights"] == f"versions/{report.version}/classifier.npz"
+    # the shipped weights are never overwritten; they're archived under their content hash
+    shipped = (ROOT / "models" / "router" / "classifier.npz").read_bytes()
+    assert (router / "classifier.npz").read_bytes() == shipped
+    [archive] = [d for d in (router / "versions").iterdir() if d.name.startswith("initial-")]
+    archived = json.loads((archive / "router.json").read_text())
+    assert (router / archived["weights"]).read_bytes() == shipped
     assert not list(router.glob("*.tmp"))
+
+
+async def test_failed_commit_leaves_the_champion_routing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retrain, "decide", lambda champ, chall: (True, "forced"))
+
+    def crash(src: object, dst: object) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(retrain.os, "replace", crash)
+    with pytest.raises(OSError):
+        await _run(tmp_path, _samples())
+    for name in ("classifier.npz", "router.json"):
+        champion = (tmp_path / "router" / name).read_bytes()
+        assert champion == (ROOT / "models" / "router" / name).read_bytes()
+
+
+async def test_two_unversioned_champions_are_both_archived(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retrain, "decide", lambda champ, chall: (True, "forced"))
+    url = await _db(tmp_path, _samples())
+    router = _router(tmp_path)
+
+    async def once(clock: float) -> None:
+        await run(url, router, REGISTRY, promote=True, data_dir=tmp_path / "none",
+                  embed=fake_embed, now=lambda: clock)  # fmt: skip
+
+    await once(NOW)
+    # someone re-runs training/train.py: new weights, router.json without version or weights
+    rng = np.random.default_rng(7)
+    with np.load(router / "versions" / "20261102T000000Z" / "classifier.npz") as data:
+        np.savez(router / "classifier.npz",
+                 **{k: data[k] + rng.normal(scale=0.01, size=data[k].shape) for k in data.files})
+    config = json.loads((router / "router.json").read_text())
+    for field in ("version", "weights"):
+        config.pop(field)
+    (router / "router.json").write_text(json.dumps(config))
+    await once(NOW + 60)
+    archives = [d for d in (router / "versions").iterdir() if d.name.startswith("initial-")]
+    assert len(archives) == 2  # neither hand-trained champion was lost
+
+
+async def test_too_few_held_out_rows_never_promotes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(retrain, "decide", lambda champ, chall: (True, "forced"))
+    report = await _run(tmp_path, _samples(40))
+    assert not report.decision and not report.promoted
+    assert "held-out" in report.reason
 
 
 async def test_reject_leaves_router_dir_byte_identical(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(retrain, "should_promote", lambda champ, chall: (False, "nope"))
+    monkeypatch.setattr(retrain, "decide", lambda champ, chall: (False, "nope"))
     report = await _run(tmp_path, _samples())
     assert not report.decision and not report.promoted
     for name in FILES:
@@ -179,7 +232,8 @@ def test_default_embedder_finds_encoder_in_cache_dir(
 async def test_critical_check_uses_the_deployed_hybrid() -> None:
     hard = retrain._critical(retrain.CRITICAL)
     assert len(hard) == 10
-    # a classifier that calls every hard prompt easy: alone it misroutes all 10, but in the
-    # gateway the rules still raise the difficulty of textbook-hard prompts
-    assert await retrain.critical_misroutes(hard, np.zeros(10), 0.5, REGISTRY) < 10
+    # a classifier that calls every hard prompt easy still routes none of them basic: in the
+    # gateway, rules can only raise difficulty. So this check is a floor guaranteed by the
+    # rules, and the gate adds a classifier-only non-regression check on top (gate.decide).
+    assert await retrain.critical_misroutes(hard, np.zeros(10), 0.5, REGISTRY) == 0
     assert await retrain.critical_misroutes(hard, np.ones(10), 0.5, REGISTRY) == 0

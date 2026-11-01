@@ -293,18 +293,30 @@ uv run python -m training.retrain           # add --dry-run to gate without prom
    - critical misroutes: the 10 labeled hard prompts in `tests/router/labeled_prompts.jsonl`
      that the deployed router would send to a basic model, counted through the gateway's own
      `route()` and `select()`
-3. **Gate.** The challenger is promoted only with **zero critical misroutes** and **at least
-   the champion's cost saved**. On a tie, the better AUC wins, so re-running with no new
-   labels changes nothing.
-4. **Version.** Every challenger is kept in `models/router/versions/<UTC timestamp>/`.
-   Promotion copies it over the router dir and keeps the old champion in `versions/` too.
-   Restart the gateway to load it. `/healthz` shows `router_version`.
+3. **Gate.** The challenger is promoted only if all of these hold:
+   - the held-out set has **at least 20 rows of both labels**
+   - **zero critical misroutes**. The rules can only raise difficulty, so this is a floor the
+     rules guarantee.
+   - its classifier alone calls **no more** hard prompts easy than the champion's does
+   - it has **at least the champion's cost saved**
 
-To roll back, copy a `versions/<id>/` folder's three files back into the router dir and
-restart.
+   On a tie, the better AUC wins, so re-running with no new labels changes nothing.
+4. **Version.** Every challenger is kept, write-once, in `models/router/versions/<UTC
+   timestamp>/`. Its `router.json` names its own weights. Promoting is a single atomic
+   replace of the router dir's `router.json`, so weights and threshold always switch
+   together. A champion that isn't in `versions/` yet is archived first, as
+   `versions/initial-<hash>/`. Restart the gateway to load the new router; `/healthz` shows
+   `router_version`.
 
-`scripts/flywheel_e2e.py` runs the whole loop (sample, label, retrain, gate) against the fake
-upstream. CI runs it on every push.
+To switch to any version (to roll back, or forward), copy `versions/<id>/router.json` over the
+router dir's `router.json` and restart.
+
+**Labels from the fake judge** only know a few keywords, so a challenger trained on them
+usually overfits and the gate rejects it. `scripts/flywheel_e2e.py` shows exactly that, then
+checks the version switch above. Real gains need a real judge model.
+
+`scripts/flywheel_e2e.py` runs the whole loop (sample, label, retrain, gate, switch version)
+against the fake upstream. CI runs it on every push.
 
 ## Run the full stack
 

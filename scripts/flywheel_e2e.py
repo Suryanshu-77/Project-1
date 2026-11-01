@@ -35,7 +35,11 @@ from training import retrain  # noqa: E402
 REGISTRY = load_registry(ROOT / "deploy" / "registry.compose.yaml")
 ARTIFACTS = ("classifier.npz", "router.json", "metrics.json", "tokenizer.json", "NOTICE")
 THINGS = ["billing", "chat", "search", "payments", "logging", "auth", "video", "inventory",
-          "booking", "analytics", "email", "storage", "maps", "music", "news"]  # fmt: skip
+          "booking", "analytics", "email", "storage", "maps", "music", "news", "weather",
+          "calendar", "photos", "notes", "fitness", "recipes", "travel", "banking", "games",
+          "tickets", "shipping", "payroll", "survey", "forum", "wiki", "crm", "helpdesk",
+          "podcast", "dating", "voting", "parking", "library", "garden", "pharmacy", "school"]
+# 320 distinct prompts: enough that the hash split holds out 20+ rows of both labels
 HARD = ["Design a multi-region {} architecture and compare the trade-offs step by step.",
         "Debug this production outage in our {} service: latency spiked after a migration.",
         "Prove that our {} scheduler can never deadlock under concurrent writers.",
@@ -125,7 +129,7 @@ async def label(settings: Settings) -> None:
         for client in clients:
             await client.aclose()
     print(f"ok   labeled {run.labeled}, failed {run.failed}")
-    if run.labeled < 100 or run.failed:
+    if run.labeled < 300 or run.failed:
         fail("expected every sample to be labeled")
 
 
@@ -143,6 +147,7 @@ async def main() -> None:
     print(f"ok   sent {await send_traffic(settings)} requests")
     await label(settings)
 
+    versions: list[str] = []
     for attempt in (1, 2):  # the second run has no new labels: it must still decide cleanly
         before = (router / "router.json").read_bytes()
         report = await retrain.run(settings.db_url, router, REGISTRY, promote=True,
@@ -155,7 +160,21 @@ async def main() -> None:
             fail(f"router.json changed={changed} but promoted={report.promoted}")
         if not (router / "versions" / report.version / "classifier.npz").exists():
             fail("the challenger was not kept in versions/")
+        versions.append(report.version)
         time.sleep(1.1)  # versions are per second
+
+    # Whatever the gate decided (fake-judge labels rarely teach real difficulty, so it often
+    # rejects), every version must be switchable to exactly as the README says: copy its
+    # router.json over the router dir's, restart, and the gateway runs it.
+    shutil.copy(router / "versions" / versions[0] / "router.json", router / "router.json")
+    app = create_app(settings, registry=REGISTRY)
+    async with app.router.lifespan_context(app):
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://gw") as client:
+            running = (await client.get("/healthz")).json()["router_version"]
+    if running != versions[0]:
+        fail(f"after switching to {versions[0]} a restarted gateway runs {running}")
+    print(f"ok   a restarted gateway runs the switched-to router {running}")
     print("M9 exit check passed: sampled, labeled, retrained and gated end to end.")
 
 

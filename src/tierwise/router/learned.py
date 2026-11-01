@@ -5,7 +5,7 @@ import json
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 import numpy as np
 from tokenizers import Tokenizer
@@ -122,6 +122,16 @@ def model_path(directory: Path) -> Path:
     return local if local.exists() else CACHE_ROUTER_DIR / "model.onnx"
 
 
+def weights_path(directory: Path, config: dict[str, Any]) -> Path:
+    """The classifier weights router.json names (a retrain promotion points it into versions/),
+    else classifier.npz beside it. One router.json write therefore switches weights and
+    threshold together: they can never come from two different versions."""
+    path = (directory / str(config.get("weights", "classifier.npz"))).resolve()
+    if not path.is_relative_to(directory.resolve()):
+        raise ArtifactError(f"router.json weights {path} are outside {directory}")
+    return path
+
+
 def _load(directory: Path, settings: Settings) -> LearnedRouter:
     config_path = directory / "router.json"
     try:
@@ -135,7 +145,7 @@ def _load(directory: Path, settings: Settings) -> LearnedRouter:
     if not encoder_path.exists():
         raise ArtifactError(f"model.onnx is in neither {directory} nor {CACHE_ROUTER_DIR}; "
                             "run `tierwise fetch-model`")  # fmt: skip
-    classifier = Classifier.load(directory / "classifier.npz", expected_dim=dim)
+    classifier = Classifier.load(weights_path(directory, config), expected_dim=dim)
     try:
         tokenizer = load_tokenizer(directory / "tokenizer.json")
         encoder = OnnxEncoder(encoder_path, settings.router_threads, settings.router_provider)
