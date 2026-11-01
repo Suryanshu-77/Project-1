@@ -114,6 +114,7 @@ async def gateway(
         "gemini_api_key": GEMINI_KEY,
         "ollama_base_url": OLLAMA_URL,
         "learned_router": False,  # deterministic rules routing unless a test opts in
+        "retries": 0,  # one upstream call per candidate unless a test opts in
         "db_url": f"sqlite+aiosqlite:///{(directory / 'log.db').as_posix()}",
         **settings,
     }

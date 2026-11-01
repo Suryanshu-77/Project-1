@@ -13,7 +13,15 @@ from tokenizers import Tokenizer
 from tierwise.config import Settings
 from tierwise.router import RoutingDecision
 from tierwise.router.classifier import ArtifactError, Classifier
-from tierwise.router.encoder import EncodedInput, OnnxEncoder, build_inputs, load_tokenizer
+from tierwise.router.encoder import (
+    MAX_CHARS_PER_TOKEN,
+    MAX_TOKENS,
+    EncodedInput,
+    OnnxEncoder,
+    build_inputs,
+    load_tokenizer,
+    special_id,
+)
 from tierwise.schema import ChatRequest
 
 logger = logging.getLogger(__name__)
@@ -75,6 +83,24 @@ class LearnedRouter:
     def _score_sync(self, req: ChatRequest) -> float:
         """Blocking: tokenization and ONNX inference. Runs in the router's thread pool."""
         return float(self.score_batch([req])[0])
+
+    def _embed_sync(self, text: str) -> np.ndarray | None:
+        if len(text) > (MAX_TOKENS - 2) * MAX_CHARS_PER_TOKEN:
+            return None  # build_inputs would cut the text before tokenizing it
+        req = ChatRequest.model_validate({"messages": [{"role": "user", "content": text}]})
+        inputs = build_inputs(self._tokenizer, req)
+        if len(inputs.input_ids) >= MAX_TOKENS:
+            return None  # truncated: the vector wouldn't represent the whole text
+        if special_id(self._tokenizer, "[UNK]") in inputs.input_ids:
+            return None  # emoji, rare symbols, 100+ char words: different texts, same vector
+        vector: np.ndarray = self._embedder.embed([inputs])[0]
+        return vector
+
+    async def embed_text(self, text: str) -> np.ndarray | None:
+        """A unit vector for the semantic cache, or None when the text is too long to embed
+        without truncation."""
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(self._executor, self._embed_sync, text)
 
     async def decide(self, req: ChatRequest) -> RoutingDecision:
         loop = asyncio.get_running_loop()

@@ -18,6 +18,15 @@ class GatewayError(Exception):
         self.type = type_
 
 
+class AllCircuitsOpen(GatewayError):
+    """Every candidate's circuit breaker is open, so nothing was attempted."""
+
+    def __init__(self, skipped: list[str]) -> None:
+        names = ", ".join(skipped) or "none"
+        message = f"All candidate models are temporarily unavailable (circuit open: {names})."
+        super().__init__(503, "upstream_unavailable", message, "api_error")
+
+
 def error_response(status: int, code: str, message: str, type_: str) -> JSONResponse:
     return JSONResponse(
         status_code=status, content={"error": {"message": message, "type": type_, "code": code}}

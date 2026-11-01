@@ -120,3 +120,13 @@ def test_score_batch_matches_single(executor: ThreadPoolExecutor) -> None:
     np.testing.assert_allclose(
         router.score_batch([a, b]), [router._score_sync(a), router._score_sync(b)]
     )
+
+
+async def test_embed_text_refuses_unknown_tokens_and_cut_text(executor: ThreadPoolExecutor) -> None:
+    router = _router(executor)
+    assert await router.embed_text("translate apple to french") is not None
+    # emoji and 100+ char words become [UNK]: different texts would embed identically
+    assert await router.embed_text("Translate 🍎 to French") is None
+    assert await router.embed_text("hash " + "a" * 150) is None
+    # few, very long tokens: the char cut drops text before the token budget is reached
+    assert await router.embed_text("ab-" * 2000) is None
