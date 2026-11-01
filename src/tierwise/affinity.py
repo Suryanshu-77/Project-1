@@ -59,6 +59,10 @@ class AffinityTable:
             return {}
         return dict(self._entries.get(prefix_hash, {}))
 
+    def is_warm(self, prefix_hash: str | None, model_id: str, ttl: int | None) -> bool:
+        served_at = self.warm_models(prefix_hash).get(model_id)
+        return served_at is not None and ttl is not None and self._clock() - served_at <= ttl
+
     def incumbent(
         self, prefix_hash: str | None, ttl_for: Callable[[str], int | None]
     ) -> str | None:
