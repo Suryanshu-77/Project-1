@@ -16,6 +16,9 @@ COPY models/router ./models/router
 COPY scripts/fake_upstream.py ./scripts/fake_upstream.py
 RUN uv sync --frozen --no-dev
 
+RUN useradd --system --no-create-home tierwise
+USER tierwise
+
 ENV TIERWISE_HOST=0.0.0.0 TIERWISE_PORT=8000
 EXPOSE 8000
 CMD ["tierwise"]

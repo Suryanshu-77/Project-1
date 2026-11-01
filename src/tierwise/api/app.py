@@ -110,8 +110,6 @@ def create_app(
         try:
             yield
         finally:
-            if tracing is not None:
-                tracing.shutdown()  # flush spans still batched
             refresh.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await refresh
@@ -120,6 +118,8 @@ def create_app(
             await log.stop()
             if learned is not None:
                 learned.close()
+            if tracing is not None:  # last: a slow collector must not delay the debit flush
+                tracing.shutdown()
 
     app = FastAPI(title="tierwise", version=__version__, lifespan=lifespan)
     install_error_handlers(app)

@@ -102,3 +102,29 @@ def test_fake_upstream_reply_shape() -> None:
     stream = client.post("/v1/chat/completions", json={**body, "stream": True}).text
     assert stream.rstrip().endswith("data: [DONE]") and '"usage"' in stream
     assert client.get("/stats").json()["requests"] == 2
+
+
+def test_postgres_healthcheck_uses_tcp_and_gateway_restarts() -> None:
+    services = _compose()["services"]
+    check = " ".join(services["postgres"]["healthcheck"]["test"])
+    assert "-h 127.0.0.1" in check  # the init server answers on the socket before TCP opens
+    assert services["gateway"]["restart"] == "on-failure"
+
+
+def test_published_ports_are_localhost_only() -> None:
+    for name, service in _compose()["services"].items():
+        for port in service.get("ports", []):
+            assert str(port).startswith("127.0.0.1:"), f"{name} publishes {port} on all interfaces"
+            assert not str(port).endswith(":4318"), "OTLP ingest needn't be reachable from the host"
+
+
+def test_grafana_has_no_default_admin_login() -> None:
+    env = _compose()["services"]["grafana"]["environment"]
+    assert env["GF_AUTH_DISABLE_LOGIN_FORM"] == "true"
+    assert env["GF_AUTH_BASIC_ENABLED"] == "false"
+
+
+def test_image_runs_as_non_root() -> None:
+    lines = (ROOT / "Dockerfile").read_text(encoding="utf-8").splitlines()
+    users = [line.split()[1] for line in lines if line.startswith("USER ")]
+    assert users and users[-1] not in {"root", "0"}

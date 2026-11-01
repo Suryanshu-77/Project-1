@@ -75,3 +75,26 @@ async def test_spans_never_contain_prompt_or_key(spans: InMemorySpanExporter) ->
 
 def test_tracing_off_without_endpoint() -> None:
     assert configure_tracing(None) is None
+
+
+async def test_tracing_shuts_down_after_debits_flush(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tierwise.api import app as app_module
+    from tierwise.store import RequestLog
+
+    order: list[str] = []
+
+    class FakeProvider:
+        def shutdown(self) -> None:
+            order.append("tracing")
+
+    real_stop = RequestLog.stop
+
+    async def stop(self: RequestLog) -> None:
+        order.append("log")
+        await real_stop(self)
+
+    monkeypatch.setattr(app_module, "configure_tracing", lambda endpoint: FakeProvider())
+    monkeypatch.setattr(RequestLog, "stop", stop)
+    async with gateway():
+        pass
+    assert order == ["log", "tracing"]  # a slow collector must not eat the debit flush's time
