@@ -1,0 +1,22 @@
+{
+  "kind": "mlp",
+  "threshold": 0.15127581357955933,
+  "n": {
+    "train": 31987,
+    "val": 4070,
+    "test": 3943
+  },
+  "positive_rate": {
+    "train": 0.1364,
+    "val": 0.1314,
+    "test": 0.1304
+  },
+  "val_auc": {
+    "logreg": 0.7306,
+    "mlp": 0.745
+  },
+  "test_auc": {
+    "learned": 0.7353,
+    "rules": 0.5886
+  }
+}

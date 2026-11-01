@@ -1,0 +1,6 @@
+{
+  "encoder": "sentence-transformers/all-MiniLM-L6-v2",
+  "threshold": 0.15127581357955933,
+  "dim": 384,
+  "kind": "mlp"
+}

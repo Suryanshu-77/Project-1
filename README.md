@@ -51,7 +51,8 @@ How a model is chosen:
 
 1. **Difficulty.** `src/tierwise/router/rules.py` scores the request from cheap signals: length,
    code, math, high-stakes words ("production", "security"), reasoning words ("design",
-   "prove"), easy words ("translate", "hi"), tools, images and conversation length.
+   "prove"), easy words ("translate", "hi"), tools, images and conversation length. When the
+   rules aren't sure, the [learned router](#learned-router) decides instead.
 2. **Quality bar.** `bar = 0.30 + 0.65 x difficulty`, shifted by `auto:cheap`/`auto:quality`,
    and raised one step when the scorer is unsure (a score near 0.5).
 3. **Selection.** Models that lack a needed capability (tools, vision, JSON) or context window
@@ -80,10 +81,44 @@ and the cheapest option that still clears the quality bar wins.
 - `X-Tierwise-Effort` reports the level sent, or `default`; `scripts/costs.py` breaks cost
   down by effort.
 
-`X-Tierwise-Reason` says why: `rules` (scored), `override` (tag, tier or explicit model),
-`affinity` (kept on its warm model) or `fallback` (scorer error, or no model cleared the bar).
+`X-Tierwise-Reason` says why: `rules` (scored), `learned` (the classifier decided), `override`
+(tag, tier or explicit model), `affinity` (kept on its warm model) or `fallback` (router error,
+or no model cleared the bar).
 Retune the scorer by editing `WEIGHTS` in `rules.py` and running
 `uv run pytest tests/router/test_rules.py`, which checks it against 30 labeled prompts.
+
+### Learned router
+
+When the rules score lands in the unsure middle (confidence below 0.8), a trained classifier
+decides. It embeds the last two user turns and the head of the system prompt (at most 256
+tokens) with MiniLM on ONNX Runtime, and a small classifier head predicts P(a cheap model's
+answer won't be good enough). Inference runs in a two-thread pool, never on the event loop.
+
+It is trained on [`routellm/gpt4_dataset`](https://huggingface.co/datasets/routellm/gpt4_dataset)
+(Apache-2.0): prompts whose Mixtral answer a GPT-4 judge graded below 4 of 5 are labeled
+"needs a strong model". Held-out results (`models/router/metrics.json`):
+
+| | Test ROC-AUC |
+|---|---|
+| Rules router | 0.589 |
+| Learned router (MiniLM + MLP) | **0.735** |
+
+Trained on 32k prompts, 13% of which needed a strong model. Validation picked the MLP over
+logistic regression (0.745 vs 0.731 ROC-AUC) and a decision threshold of 0.15. On CPU the
+encoder plus classifier takes 6.3 ms at p50 (`scripts/bench_router.py`).
+
+The tokenizer and trained classifier are committed; the 90 MB ONNX encoder is not. Without it
+the gateway logs a warning and routes with rules only. To build it, or to retrain:
+
+```bash
+uv sync --group train
+uv run python -m training.export_onnx             # models/router/model.onnx
+uv run python -m training.prepare_data --limit 40000
+uv run python -m training.train                   # classifier.npz, router.json, metrics.json
+uv run python scripts/bench_router.py             # p50 latency, budget 10 ms
+```
+
+Set `TIERWISE_LEARNED_ROUTER=false` to turn it off; `TIERWISE_ROUTER_DIR` points elsewhere.
 
 ## Providers
 
