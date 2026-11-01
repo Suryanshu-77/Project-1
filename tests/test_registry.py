@@ -1,8 +1,10 @@
 from pathlib import Path
+from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
-from tierwise.registry import RegistryError, load_registry
+from tierwise.registry import ModelSpec, RegistryError, load_registry
 
 ENTRY = """
   - id: {id}
@@ -80,3 +82,50 @@ def test_shipped_registry_cache_ttls_match_real_caching() -> None:
             assert model.cache_ttl_s, f"{model.id} caches automatically but has no TTL"
         else:
             assert model.cache_ttl_s is None, f"{model.id} would be treated as warm"
+
+
+def _spec(**overrides: Any) -> dict[str, Any]:
+    fields: dict[str, Any] = {
+        "id": "m", "provider": "anthropic", "price_in": 1.0, "price_out": 2.0,
+        "context": 1000, "caps": [], "quality": 0.5, "tier": "basic",
+    }  # fmt: skip
+    fields.update(overrides)
+    return fields
+
+
+def _levels(**levels: float) -> dict[str, Any]:
+    return {name: {"quality": q, "thinking_tokens": 100} for name, q in levels.items()}
+
+
+def test_efforts_default_must_be_listed() -> None:
+    with pytest.raises(ValidationError):
+        ModelSpec.model_validate(_spec(efforts={"default": "high", "levels": _levels(low=-0.05)}))
+
+
+def test_efforts_unknown_level_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ModelSpec.model_validate(_spec(efforts={"default": "ultra", "levels": _levels(ultra=0.0)}))
+
+
+def test_effective_quality_out_of_range_rejected() -> None:
+    with pytest.raises(ValidationError):
+        ModelSpec.model_validate(
+            _spec(quality=0.95, efforts={"default": "low", "levels": _levels(low=0.0, high=0.10)})
+        )
+
+
+def test_model_without_efforts_is_valid() -> None:
+    spec = ModelSpec.model_validate(_spec())
+    assert spec.efforts is None
+    assert spec.effort_in_cache_key is False
+
+
+def test_shipped_registry_efforts() -> None:
+    registry = load_registry("config/registry.yaml")
+    for model in registry.models:
+        if model.provider == "anthropic":
+            assert model.effort_in_cache_key
+            assert model.efforts is not None
+            assert model.efforts.default in model.efforts.levels
+        if model.provider == "ollama" or model.id == "gpt-4.1-nano":
+            assert model.efforts is None

@@ -86,6 +86,10 @@ class Usage(BaseModel):
 
 FinishReason = Literal["stop", "length", "tool_calls", "content_filter"]
 
+# Normalized reasoning-effort scale, lowest to highest; adapters map it to provider fields.
+EffortLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
+EFFORT_ORDER: tuple[EffortLevel, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+
 
 class ChatResponse(BaseModel):
     id: str
