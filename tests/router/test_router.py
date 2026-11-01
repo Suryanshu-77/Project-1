@@ -171,3 +171,24 @@ def test_load_learned_truncated_classifier_returns_none(
     (tmp_path / "classifier.npz").write_bytes((real / "classifier.npz").read_bytes()[:5000])
     assert load_learned(_settings(tmp_path)) is None
     assert "classifier.npz" in caplog.text
+
+
+class LowLearned:
+    async def decide(self, req: ChatRequest) -> RoutingDecision:
+        return RoutingDecision(
+            difficulty=0.1, confidence=0.7, source="learned", signals={"p_strong": 0.02}
+        )
+
+
+async def test_rules_can_raise_learned_difficulty_never_lower() -> None:
+    req = _req(MID)
+    rules = router_module.rules_decision(req)
+    result = await route(req, LowLearned())  # type: ignore[arg-type]
+    assert result.decision is not None
+    assert result.decision.source == "learned"
+    assert result.decision.difficulty == pytest.approx(rules.difficulty)  # max(rules, 0.1)
+    assert result.decision.confidence == 0.7
+    assert result.decision.signals["rules_difficulty"] == pytest.approx(rules.difficulty)
+    assert result.decision.signals["p_strong"] == 0.02
+    high = await route(req, FakeLearned())  # type: ignore[arg-type]
+    assert high.decision is not None and high.decision.difficulty == 0.8
