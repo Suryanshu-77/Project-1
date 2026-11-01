@@ -5,7 +5,8 @@
 # checked from here. VERIFY against the official pages before trusting cost reports.
 # Long-context surcharges (e.g. >200K tokens on Gemini Pro) are not modeled yet.
 #
-# quality: uncalibrated until M5 (placeholder values, ordered by tier).
+# quality: placeholder values, ordered by tier. M5's benchmarks (BENCHMARK.md) use older model
+#   pairs, so they measure the router, not these models; calibration waits for M9's shadow labels.
 #
 # efforts: reasoning-effort levels the model accepts (tierwise scale: minimal, low, medium,
 # high, xhigh, max). Each level shifts quality (0 at the provider default; -0.15 per scale
