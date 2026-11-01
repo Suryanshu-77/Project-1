@@ -146,7 +146,9 @@ def test_from_gemini_text_usage_with_thoughts() -> None:
     )
     assert resp.content == "Hello"
     assert resp.finish_reason == "stop"
-    assert resp.usage == Usage(input_tokens=100, output_tokens=15, cached_input_tokens=40)
+    assert resp.usage == Usage(
+        input_tokens=100, output_tokens=15, cached_input_tokens=40, reasoning_tokens=5
+    )
 
 
 def test_from_gemini_function_call_finish_tool_calls() -> None:
@@ -219,3 +221,20 @@ def test_parallel_tool_results_share_one_turn() -> None:
     assert len(body["contents"]) == 3
     names = [p["functionResponse"]["name"] for p in body["contents"][2]["parts"]]
     assert names == ["a", "b"]
+
+
+def test_gemini_thinking_level() -> None:
+    body = to_gemini(_req([{"role": "user", "content": "q"}], reasoning_effort="low"))
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingLevel": "low"}
+    assert "generationConfig" not in to_gemini(_req([{"role": "user", "content": "q"}]))
+
+
+def test_gemini_usage_reasoning_tokens() -> None:
+    resp = from_gemini(
+        _reply([{"text": "x"}], promptTokenCount=10, candidatesTokenCount=2, thoughtsTokenCount=5),
+        MODEL,
+    )
+    assert resp.usage.reasoning_tokens == 5
+    assert resp.usage.output_tokens == 7
+    plain = from_gemini(_reply([{"text": "x"}], promptTokenCount=1, candidatesTokenCount=1), MODEL)
+    assert plain.usage.reasoning_tokens is None

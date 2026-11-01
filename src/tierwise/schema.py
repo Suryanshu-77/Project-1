@@ -9,6 +9,10 @@ from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+# Normalized reasoning-effort scale, lowest to highest; adapters map it to provider fields.
+EffortLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
+EFFORT_ORDER: tuple[EffortLevel, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
+
 
 class TextPart(BaseModel):
     type: Literal["text"]
@@ -70,6 +74,7 @@ class ChatRequest(BaseModel):
     stop: str | list[str] | None = None
     stream: bool = False
     stream_options: dict[str, Any] | None = None
+    reasoning_effort: EffortLevel | None = None  # OpenAI's name; adapters translate it
     tools: list[ToolDef] | None = None
     tool_choice: Any = None
     response_format: dict[str, Any] | None = None
@@ -82,13 +87,10 @@ class Usage(BaseModel):
     output_tokens: int
     cached_input_tokens: int = 0
     cache_write_tokens: int = 0
+    reasoning_tokens: int | None = None  # part of output_tokens, where the provider reports it
 
 
 FinishReason = Literal["stop", "length", "tool_calls", "content_filter"]
-
-# Normalized reasoning-effort scale, lowest to highest; adapters map it to provider fields.
-EffortLevel = Literal["minimal", "low", "medium", "high", "xhigh", "max"]
-EFFORT_ORDER: tuple[EffortLevel, ...] = ("minimal", "low", "medium", "high", "xhigh", "max")
 
 
 class ChatResponse(BaseModel):
@@ -132,12 +134,15 @@ class StreamChunk(BaseModel):
 
 
 def _usage_to_openai(usage: Usage) -> dict[str, Any]:
-    return {
+    out: dict[str, Any] = {
         "prompt_tokens": usage.input_tokens,
         "completion_tokens": usage.output_tokens,
         "total_tokens": usage.input_tokens + usage.output_tokens,
         "prompt_tokens_details": {"cached_tokens": usage.cached_input_tokens},
     }
+    if usage.reasoning_tokens is not None:
+        out["completion_tokens_details"] = {"reasoning_tokens": usage.reasoning_tokens}
+    return out
 
 
 def _tool_delta_to_openai(delta: ToolCallDelta) -> dict[str, Any]:

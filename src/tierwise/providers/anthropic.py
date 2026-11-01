@@ -155,6 +155,8 @@ def to_anthropic(req: ChatRequest, model_id: str) -> dict[str, Any]:
         body["top_p"] = req.top_p
     if req.stop is not None:
         body["stop_sequences"] = [req.stop] if isinstance(req.stop, str) else req.stop
+    if req.reasoning_effort is not None:
+        body["output_config"] = {"effort": req.reasoning_effort}
     if req.tools:
         body["tools"] = [
             {

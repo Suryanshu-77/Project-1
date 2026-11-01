@@ -332,3 +332,9 @@ async def test_stream_zero_argument_tool_emits_empty_object() -> None:
     )
     deltas = [d for c in chunks if c.tool_calls for d in c.tool_calls]
     assert json.loads("".join(d.arguments for d in deltas)) == {}
+
+
+def test_anthropic_effort_in_output_config() -> None:
+    req = _req([{"role": "user", "content": "q"}], reasoning_effort="low")
+    assert to_anthropic(req, MODEL)["output_config"] == {"effort": "low"}
+    assert "output_config" not in to_anthropic(_req([{"role": "user", "content": "q"}]), MODEL)

@@ -44,10 +44,12 @@ def _finish(value: Any) -> FinishReason:
 
 def _usage(usage: dict[str, Any]) -> Usage:
     details = usage.get("prompt_tokens_details") or {}
+    completion = usage.get("completion_tokens_details") or {}
     return Usage(
         input_tokens=usage.get("prompt_tokens") or 0,
         output_tokens=usage.get("completion_tokens") or 0,
         cached_input_tokens=details.get("cached_tokens") or 0,
+        reasoning_tokens=completion.get("reasoning_tokens"),
     )
 
 

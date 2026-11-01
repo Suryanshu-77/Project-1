@@ -80,6 +80,8 @@ def _generation_config(req: ChatRequest) -> dict[str, Any]:
         config["stopSequences"] = [req.stop] if isinstance(req.stop, str) else req.stop
     if req.response_format and req.response_format.get("type") in ("json_object", "json_schema"):
         config["responseMimeType"] = "application/json"
+    if req.reasoning_effort is not None:
+        config["thinkingConfig"] = {"thinkingLevel": req.reasoning_effort}
     return config
 
 
@@ -150,6 +152,7 @@ def _usage(meta: dict[str, Any]) -> Usage:
         output_tokens=(meta.get("candidatesTokenCount") or 0)
         + (meta.get("thoughtsTokenCount") or 0),
         cached_input_tokens=meta.get("cachedContentTokenCount") or 0,
+        reasoning_tokens=meta.get("thoughtsTokenCount"),
     )
 
 
