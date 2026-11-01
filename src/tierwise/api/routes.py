@@ -127,7 +127,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
     affinity: AffinityTable = state.affinity
     try:
         try:
-            result = route(req)
+            result = await route(req, state.learned)
         except UnknownRoutingValue as exc:
             raise UnknownModel(req.model) from exc
         except EmptyAfterTag as exc:

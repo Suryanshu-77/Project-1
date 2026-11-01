@@ -1,16 +1,22 @@
 """Learned router: MiniLM embedding + classifier head -> P(strong model needed) -> a decision."""
 
 import asyncio
+import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 from tokenizers import Tokenizer
 
+from tierwise.config import Settings
 from tierwise.router import RoutingDecision
-from tierwise.router.classifier import Classifier
-from tierwise.router.encoder import EncodedInput, build_inputs
+from tierwise.router.classifier import ArtifactError, Classifier
+from tierwise.router.encoder import EncodedInput, OnnxEncoder, build_inputs, load_tokenizer
 from tierwise.schema import ChatRequest
+
+logger = logging.getLogger(__name__)
 
 
 class Embedder(Protocol):
@@ -58,6 +64,9 @@ class LearnedRouter:
         self.threshold = threshold
         self._executor = executor
 
+    def close(self) -> None:
+        self._executor.shutdown(wait=False, cancel_futures=True)
+
     def _score_sync(self, req: ChatRequest) -> float:
         """Blocking: tokenization and ONNX inference. Runs in the router's thread pool."""
         embedding = self._embedder.embed([build_inputs(self._tokenizer, req)])
@@ -73,3 +82,38 @@ class LearnedRouter:
             source="learned",
             signals={"p_strong": p, "threshold": self.threshold},
         )
+
+
+def _load(directory: Path, settings: Settings) -> LearnedRouter:
+    config_path = directory / "router.json"
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        threshold, dim = float(config["threshold"]), int(config["dim"])
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        raise ArtifactError(f"cannot read {config_path}: {exc}") from exc
+    if not 0.0 < threshold < 1.0:
+        raise ArtifactError(f"{config_path}: threshold {threshold} is outside (0, 1)")
+    model_path = directory / "model.onnx"
+    if not model_path.exists():
+        raise ArtifactError(f"{model_path} is missing; run training.export_onnx")
+    classifier = Classifier.load(directory / "classifier.npz", expected_dim=dim)
+    try:
+        tokenizer = load_tokenizer(directory / "tokenizer.json")
+        encoder = OnnxEncoder(model_path, settings.router_threads, settings.router_provider)
+    except Exception as exc:  # tokenizers and onnxruntime raise their own exception types
+        raise ArtifactError(f"cannot load the encoder from {directory}: {exc}") from exc
+    if encoder.dim != dim:
+        raise ArtifactError(f"encoder produces {encoder.dim}-dim vectors, router.json says {dim}")
+    executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tierwise-router")
+    return LearnedRouter(tokenizer, encoder, classifier, threshold, executor)
+
+
+def load_learned(settings: Settings) -> LearnedRouter | None:
+    """The learned router, or None (rules-only) when disabled or its artifacts are unusable."""
+    if not settings.learned_router:
+        return None
+    try:
+        return _load(Path(settings.router_dir), settings)
+    except ArtifactError as exc:
+        logger.warning("learned router disabled, routing with rules only: %s", exc)
+        return None

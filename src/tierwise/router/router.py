@@ -1,9 +1,10 @@
-"""The routing pipeline: override tag, then rules, with a fallback that never fails a request."""
+"""The routing pipeline: override tag, rules, learned router, and a fallback that never fails."""
 
 import logging
 from dataclasses import dataclass
 
 from tierwise.router import RoutingDecision
+from tierwise.router.learned import LearnedRouter
 from tierwise.router.modes import RouteTarget, extract_tag, parse_target
 from tierwise.router.rules import rules_decision
 from tierwise.schema import ChatRequest, ImagePart
@@ -11,6 +12,7 @@ from tierwise.schema import ChatRequest, ImagePart
 logger = logging.getLogger(__name__)
 
 FALLBACK = RoutingDecision(difficulty=0.7, confidence=0.0, source="fallback")
+RULES_SHORTCUT = 0.8  # rules this sure of themselves skip the learned router
 
 
 @dataclass(frozen=True)
@@ -37,7 +39,7 @@ def required_caps(req: ChatRequest) -> frozenset[str]:
     return frozenset(caps)
 
 
-def route(req: ChatRequest) -> RoutingResult:
+async def route(req: ChatRequest, learned: LearnedRouter | None = None) -> RoutingResult:
     """Raises only for bad client input (UnknownRoutingValue, EmptyAfterTag)."""
     target = parse_target(req.model)
     cleaned, tag = extract_tag(req)  # tags are never forwarded, whatever the target
@@ -50,7 +52,9 @@ def route(req: ChatRequest) -> RoutingResult:
         else:
             try:
                 decision = rules_decision(cleaned)
+                if learned is not None and decision.confidence < RULES_SHORTCUT:
+                    decision = await learned.decide(cleaned)
             except Exception:
-                logger.exception("rules router failed; using the fallback decision")
+                logger.exception("router failed; using the fallback decision")
                 decision = FALLBACK
     return RoutingResult(target, decision, cleaned, required_caps(cleaned))

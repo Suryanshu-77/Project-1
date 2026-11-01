@@ -1,5 +1,6 @@
-"""Application factory: registry, lifespan-managed provider clients and the request log."""
+"""Application factory: registry, provider clients, learned router and the request log."""
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -17,6 +18,7 @@ from tierwise.providers.gemini import GeminiProvider
 from tierwise.providers.ollama import OllamaProvider
 from tierwise.providers.openai import OpenAIProvider
 from tierwise.registry import Registry, load_registry
+from tierwise.router.learned import load_learned
 from tierwise.store import RequestLog
 
 LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=30)
@@ -59,6 +61,10 @@ def create_app(
         app.state.providers = providers
         app.state.affinity = AffinityTable()
 
+        # Loading and warming the ONNX session blocks; keep it off the event loop.
+        learned = await asyncio.to_thread(load_learned, config)
+        app.state.learned = learned
+
         log = RequestLog(config.db_url)
         await log.start()
         app.state.log = log
@@ -68,6 +74,8 @@ def create_app(
             for client in clients.values():
                 await client.aclose()
             await log.stop()
+            if learned is not None:
+                learned.close()
 
     app = FastAPI(title="tierwise", version=__version__, lifespan=lifespan)
     install_error_handlers(app)

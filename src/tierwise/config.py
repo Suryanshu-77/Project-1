@@ -20,5 +20,14 @@ class Settings(BaseSettings):
         default="sqlite+aiosqlite:///tierwise.db",
         validation_alias=AliasChoices("TIERWISE_DB_URL", "db_url"),
     )
+    router_dir: str = Field(
+        default="models/router",
+        validation_alias=AliasChoices("TIERWISE_ROUTER_DIR", "router_dir"),
+    )
+    router_threads: int = 2
+    router_provider: str = "CPUExecutionProvider"
+    learned_router: bool = Field(
+        default=True, validation_alias=AliasChoices("TIERWISE_LEARNED_ROUTER", "learned_router")
+    )
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))

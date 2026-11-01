@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 import pytest
@@ -358,7 +359,7 @@ def _shipped_pick(prompt: str) -> Option:
 
     registry = load_registry("config/registry.yaml")
     req = ChatRequest.model_validate({"messages": [{"role": "user", "content": prompt}]})
-    return select(route(req), registry, ALL_PROVIDERS, AffinityTable()).candidates[0]
+    return select(asyncio.run(route(req)), registry, ALL_PROVIDERS, AffinityTable()).candidates[0]
 
 
 def test_shipped_registry_hard_prompts_get_medium_or_above() -> None:
