@@ -37,5 +37,12 @@ class Settings(BaseSettings):
     breaker_cooldown_s: float = 30.0
     stream_hold_s: float = 3.0
     stream_hold_bytes: int = 4096
+    cache_enabled: bool = Field(
+        default=True, validation_alias=AliasChoices("TIERWISE_CACHE", "cache_enabled")
+    )
+    cache_similarity: float = 0.95
+    cache_ttl_s: float = 3600
+    cache_max_entries: int = 10_000
+    cache_max_temperature: float = 0.3
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))

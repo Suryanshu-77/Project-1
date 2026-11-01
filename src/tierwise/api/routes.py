@@ -3,8 +3,10 @@
 import logging
 import time
 import uuid
+from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from functools import partial
+from typing import cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
@@ -17,6 +19,14 @@ from tierwise.api.streaming import (
     prime_stream,
     sse_response,
 )
+from tierwise.cache import (
+    CachedAnswer,
+    CacheKey,
+    SemanticCache,
+    cacheable,
+    last_user_text,
+    scope_key,
+)
 from tierwise.costs import cost_usd
 from tierwise.options import Option
 from tierwise.providers.base import Provider, ProviderError, RetryableError
@@ -26,7 +36,7 @@ from tierwise.reliability.failover import serve
 from tierwise.reliability.retry import RetryPolicy, with_retries
 from tierwise.router.modes import VIRTUAL_MODELS, EmptyAfterTag, UnknownRoutingValue
 from tierwise.router.router import RoutingResult, route
-from tierwise.schema import ChatRequest, ChatResponse, Usage
+from tierwise.schema import ChatRequest, ChatResponse, FinishReason, StreamChunk, Usage
 from tierwise.selector import NoEligibleModel, select
 from tierwise.store import RequestLog, RequestRecord
 
@@ -67,11 +77,13 @@ class _Recorder:
         self.prefix_hash: str | None = None
         self.effort: str | None = None
         self.failover_count = 0
+        self.cache_hit = False
 
     def costs(self, usage: Usage | None) -> tuple[float | None, float | None]:
         if usage is None or self.spec is None:
             return None, None
-        return cost_usd(usage, self.spec), cost_usd(usage, self.registry.baseline())
+        cost = 0.0 if self.cache_hit else cost_usd(usage, self.spec)
+        return cost, cost_usd(usage, self.registry.baseline())
 
     def done(self, usage: Usage | None, status: int, error_code: str | None) -> None:
         cost, baseline = self.costs(usage)
@@ -96,6 +108,7 @@ class _Recorder:
                 prefix_hash=self.prefix_hash,
                 effort=self.effort,
                 failover_count=self.failover_count,
+                cache_hit=self.cache_hit,
                 tokens_reasoning=usage.reasoning_tokens if usage else None,
                 error_code=error_code,
             )
@@ -141,6 +154,52 @@ def _forward(request: ChatRequest, option: Option | None) -> tuple[ChatRequest, 
     return request.model_copy(update={"reasoning_effort": sent}), sent, option.header_value
 
 
+def _cached_response(
+    hit: CachedAnswer, result: RoutingResult, recorder: _Recorder, spec: ModelSpec
+) -> Response:
+    """Answer from the cache, as JSON or as a short SSE stream."""
+    recorder.spec, recorder.model, recorder.source = spec, spec.id, "cache"
+    recorder.cache_hit = True
+    recorder.mode = result.request.model
+    headers = {
+        "X-Tierwise-Model": spec.id,
+        "X-Tierwise-Provider": spec.provider,
+        "X-Tierwise-Reason": "cache",
+        "X-Tierwise-Request-Id": recorder.request_id,
+        "X-Tierwise-Effort": "default",
+        "X-Tierwise-Failovers": "0",
+    }
+    finish = cast(FinishReason, hit.finish_reason)
+    if result.request.stream:
+
+        async def replay() -> AsyncGenerator[StreamChunk, None]:
+            yield StreamChunk(content=hit.content)
+            yield StreamChunk(finish_reason=finish)
+            yield StreamChunk(usage=hit.usage)
+
+        return sse_response(
+            Primed(replay(), []),
+            request_id=recorder.request_id,
+            model=spec.id,
+            headers=headers,
+            include_usage=bool((result.request.stream_options or {}).get("include_usage")),
+            on_done=recorder.done,
+        )
+    response = ChatResponse(
+        id=f"chatcmpl-{recorder.request_id}",
+        model=spec.id,
+        provider=spec.provider,
+        content=hit.content,
+        tool_calls=None,
+        finish_reason=finish,
+        usage=hit.usage,
+        created=int(time.time()),
+    )
+    recorder.done(hit.usage, 200, None)
+    headers["X-Tierwise-Cost-USD"] = "0.000000"
+    return JSONResponse(response.to_openai(), headers=headers)
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest, request: Request) -> Response:
     state = request.app.state
@@ -156,6 +215,22 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             raise UnknownModel(req.model) from exc
         except EmptyAfterTag as exc:
             raise GatewayError(400, "invalid_request_error", str(exc)) from exc
+        cache: SemanticCache | None = state.cache
+        cache_key: CacheKey | None = None
+        if cache is not None and cacheable(
+            result, request.headers, state.cache_max_temperature
+        ):
+            cache_key = await cache.key(scope_key(result), last_user_text(result))
+            hit = cache.lookup(cache_key)
+            hit_spec = state.registry.get(hit.model_id) if hit is not None else None
+            if hit is not None and hit_spec is not None:
+                return _cached_response(hit, result, recorder, hit_spec)
+
+        def keep(content: str, finish: str, usage: Usage, spec: ModelSpec) -> None:
+            """Cache only complete text answers."""
+            if cache is not None and cache_key is not None and content and finish == "stop":
+                cache.store(cache_key, CachedAnswer(content, spec.id, spec.provider, usage, finish))
+
         plan = _choose(result, state, recorder)
         recorder.source = plan.reason
 
@@ -203,10 +278,18 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             headers = served_by(spec, option, failovers)
             forward = _forward(result.request, option)[0]
 
+            streamed_chunks: list[StreamChunk] = []
+
             def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
                 recorder.done(usage, status, code)
                 if status == 200:
                     remember(spec, option)
+                    if usage is not None:
+                        text = "".join(c.content or "" for c in streamed_chunks)
+                        finishes = [c.finish_reason for c in streamed_chunks if c.finish_reason]
+                        has_tools = any(c.tool_calls for c in streamed_chunks)
+                        if not has_tools:
+                            keep(text, finishes[-1] if finishes else "", usage, spec)
                 elif status == STATUS_UPSTREAM_FAILED_MID_STREAM:  # failed after first content
                     failure = RetryableError(spec.provider, None, code or "mid-stream failure")
                     breakers.record(spec.provider, spec.id, failure)
@@ -218,6 +301,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 headers=headers,
                 include_usage=bool((forward.stream_options or {}).get("include_usage")),
                 on_done=stream_done,
+                collect=streamed_chunks,
             )
 
         if plan.concrete is not None:
@@ -256,6 +340,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
     cost, _ = recorder.costs(response.usage)
     recorder.done(response.usage, 200, None)
     remember(spec, option)
+    if not response.tool_calls:
+        keep(response.content or "", response.finish_reason, response.usage, spec)
     if cost is not None:
         headers["X-Tierwise-Cost-USD"] = f"{cost:.6f}"
     return JSONResponse(response.to_openai(), headers=headers)

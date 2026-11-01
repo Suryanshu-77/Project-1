@@ -131,6 +131,7 @@ def sse_response(
     headers: dict[str, str],
     include_usage: bool,
     on_done: OnDone,
+    collect: list[StreamChunk] | None = None,
 ) -> StreamingResponse:
     """Stream the held chunks, then the read in flight (if any), then the rest.
 
@@ -149,6 +150,8 @@ def sse_response(
 
         def render(chunk: StreamChunk) -> str | None:
             nonlocal usage
+            if collect is not None:
+                collect.append(chunk)
             if chunk.usage is not None:
                 usage = chunk.usage
                 if not include_usage:

@@ -11,6 +11,7 @@ from tierwise import __version__
 from tierwise.affinity import AffinityTable
 from tierwise.api.errors import install_error_handlers
 from tierwise.api.routes import router
+from tierwise.cache import SemanticCache
 from tierwise.config import Settings
 from tierwise.providers.anthropic import AnthropicProvider
 from tierwise.providers.base import Provider
@@ -71,6 +72,17 @@ def create_app(
         # Loading and warming the ONNX session blocks; keep it off the event loop.
         learned = await asyncio.to_thread(load_learned, config)
         app.state.learned = learned
+        app.state.cache = (
+            SemanticCache(
+                learned.embed_text,
+                config.cache_similarity,
+                config.cache_ttl_s,
+                config.cache_max_entries,
+            )
+            if learned is not None and config.cache_enabled
+            else None
+        )
+        app.state.cache_max_temperature = config.cache_max_temperature
 
         log = RequestLog(config.db_url)
         await log.start()
