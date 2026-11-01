@@ -98,6 +98,8 @@ def create_app(
         keys.replace(await log.list_keys())
         app.state.keys = keys
         app.state.require_api_key = config.require_api_key
+        app.state.store_payloads = config.store_payloads
+        app.state.shadow_rate = config.shadow_rate
         app.state.limiter = RateLimiter()
         app.state.metrics = Metrics(
             app.state.breakers, log, [m.id for m in app.state.registry.models]

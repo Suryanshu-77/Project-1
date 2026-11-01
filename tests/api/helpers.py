@@ -133,12 +133,14 @@ def body(model: str, **extra: Any) -> dict[str, Any]:
 
 
 async def make_key(
-    app: FastAPI, budget: float | None = None, rpm: int | None = None
+    app: FastAPI, budget: float | None = None, rpm: int | None = None, allow_shadow: bool = False
 ) -> tuple[str, Any]:
     """Create a key in the gateway's database and make it live without the refresh delay."""
     from tierwise.keys import generate_key, hash_key
 
     key = generate_key()
-    row = await app.state.log.create_key("test", hash_key(key), key[:10], budget, rpm)
+    row = await app.state.log.create_key(
+        "test", hash_key(key), key[:10], budget, rpm, allow_shadow
+    )
     app.state.keys.replace(await app.state.log.list_keys())
     return key, row
