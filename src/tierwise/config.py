@@ -35,5 +35,7 @@ class Settings(BaseSettings):
     breaker_failures: int = 5
     breaker_window_s: float = 60.0
     breaker_cooldown_s: float = 30.0
+    stream_hold_s: float = 3.0
+    stream_hold_bytes: int = 4096
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))

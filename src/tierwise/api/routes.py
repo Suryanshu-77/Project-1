@@ -11,10 +11,15 @@ from fastapi.responses import JSONResponse, Response
 
 from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.api.errors import GatewayError, gateway_error_from
-from tierwise.api.streaming import sse_response
+from tierwise.api.streaming import (
+    STATUS_UPSTREAM_FAILED_MID_STREAM,
+    Primed,
+    prime_stream,
+    sse_response,
+)
 from tierwise.costs import cost_usd
 from tierwise.options import Option
-from tierwise.providers.base import Provider, ProviderError
+from tierwise.providers.base import Provider, ProviderError, RetryableError
 from tierwise.registry import ModelSpec, Registry
 from tierwise.reliability.breaker import Breakers
 from tierwise.reliability.failover import serve
@@ -173,27 +178,41 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 affinity.record(plan.prompt_hash, spec.id, _forward(result.request, option)[1])
 
         if result.request.stream:
-            # Streams fail over in M6 Task 4; until then the first candidate serves alone.
-            option = plan.candidates[0] if plan.concrete is None else None
-            spec = plan.concrete or plan.candidates[0].spec
-            headers = served_by(spec, option, 0)
+            hold_s, hold_bytes = state.stream_hold
+
+            async def open_stream(candidate: Option | None, target: ModelSpec) -> Primed:
+                outgoing = _forward(result.request, candidate)[0]
+                chunks = providers[target.provider].stream(outgoing, target.wire_id)
+                return await prime_stream(chunks, hold_s, hold_bytes)
+
+            if plan.concrete is not None:
+                spec, option, failovers = plan.concrete, None, 0
+                served_by(spec, None, 0)  # so an error is logged against this model
+                try:
+                    primed = await with_retries(partial(open_stream, None, spec), policy)
+                except ProviderError as exc:
+                    breakers.record(spec.provider, spec.id, exc)
+                    raise
+                breakers.record(spec.provider, spec.id, None)
+            else:
+                streamed = await serve(
+                    plan.candidates, lambda c: open_stream(c, c.spec), breakers, policy
+                )
+                primed, option, failovers = streamed.value, streamed.option, streamed.failovers
+                spec = option.spec
+            headers = served_by(spec, option, failovers)
             forward = _forward(result.request, option)[0]
 
             def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
                 recorder.done(usage, status, code)
                 if status == 200:
                     remember(spec, option)
+                elif status == STATUS_UPSTREAM_FAILED_MID_STREAM:  # failed after first content
+                    failure = RetryableError(spec.provider, None, code or "mid-stream failure")
+                    breakers.record(spec.provider, spec.id, failure)
 
-            chunks = providers[spec.provider].stream(forward, spec.wire_id)
-            try:
-                # Wait for the first chunk so early failures become ordinary HTTP errors.
-                first = await anext(chunks, None)
-            except BaseException:
-                await chunks.aclose()
-                raise
             return sse_response(
-                chunks,
-                first,
+                primed,
                 request_id=recorder.request_id,
                 model=spec.id,
                 headers=headers,

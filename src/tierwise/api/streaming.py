@@ -1,10 +1,12 @@
 """Serve a provider's normalized chunks as an OpenAI-compatible server-sent event stream."""
 
 import asyncio
+import contextlib
 import json
 import logging
 import time
 from collections.abc import AsyncGenerator, AsyncIterator, Callable
+from dataclasses import dataclass
 from typing import Any
 
 from fastapi.responses import StreamingResponse
@@ -30,11 +32,68 @@ def _error_event(message: str, type_: str, code: str) -> str:
     return _event({"error": {"message": message, "type": type_, "code": code}})
 
 
+@dataclass
+class Primed:
+    """An upstream stream, held until its first real content (see ``prime_stream``)."""
+
+    chunks: AsyncGenerator[StreamChunk, None]
+    buffered: list[StreamChunk]
+    pending: "asyncio.Future[StreamChunk] | None" = None  # a read still in flight at commit
+
+    async def close(self) -> None:
+        """Close upstream; a read still in flight must be cancelled first (an async generator
+        can't be closed while it is running)."""
+        if self.pending is not None and not self.pending.done():
+            self.pending.cancel()
+            with contextlib.suppress(BaseException):
+                await self.pending
+        await self.chunks.aclose()
+
+
+def _has_content(chunk: StreamChunk) -> bool:
+    return bool(chunk.content) or bool(chunk.tool_calls)
+
+
+async def prime_stream(
+    chunks: AsyncGenerator[StreamChunk, None], hold_s: float = 3.0, hold_bytes: int = 4096
+) -> Primed:
+    """Read upstream until the first content or tool-call delta, the end of the stream, or
+    the hold cap (time or buffered bytes), without sending anything to the client.
+
+    An error raised inside this window propagates (after closing upstream), so the caller
+    can still fail over invisibly. Reads use a separate task, never ``wait_for`` on the
+    generator: cancelling a pending ``anext`` would close a healthy but slow stream.
+    """
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + hold_s
+    primed = Primed(chunks, [])
+    size = 0
+    try:
+        while True:
+            read = asyncio.ensure_future(anext(chunks))
+            primed.pending = read
+            done, _ = await asyncio.wait({read}, timeout=max(deadline - loop.time(), 0.0))
+            if not done:
+                return primed  # the hold timed out: commit with the read still in flight
+            primed.pending = None
+            try:
+                chunk = read.result()
+            except StopAsyncIteration:
+                return primed
+            primed.buffered.append(chunk)
+            size += len(chunk.model_dump_json())
+            if _has_content(chunk) or size >= hold_bytes:
+                return primed
+    except BaseException:
+        await primed.close()
+        raise
+
+
 class _Outcome:
     """Reports a stream's outcome exactly once, however and wherever the stream ends."""
 
-    def __init__(self, chunks: AsyncGenerator[StreamChunk, None], on_done: OnDone) -> None:
-        self.chunks = chunks
+    def __init__(self, primed: Primed, on_done: OnDone) -> None:
+        self.primed = primed
         self.on_done = on_done
         self.reported = False
 
@@ -42,7 +101,7 @@ class _Outcome:
         if not self.reported:
             self.reported = True
             self.on_done(usage, status, code)  # record first: closing upstream may fail
-        await self.chunks.aclose()
+        await self.primed.close()
 
 
 class _ReportingStreamingResponse(StreamingResponse):
@@ -65,8 +124,7 @@ class _ReportingStreamingResponse(StreamingResponse):
 
 
 def sse_response(
-    chunks: AsyncGenerator[StreamChunk, None],
-    first: StreamChunk | None,
+    primed: Primed,
     *,
     request_id: str,
     model: str,
@@ -74,7 +132,7 @@ def sse_response(
     include_usage: bool,
     on_done: OnDone,
 ) -> StreamingResponse:
-    """Stream ``first`` and then the rest of ``chunks``.
+    """Stream the held chunks, then the read in flight (if any), then the rest.
 
     ``on_done(usage, status, error_code)`` runs exactly once: 200 when the stream completes,
     502 after a failure that could only be reported in-band, 499 when the client went away
@@ -83,7 +141,7 @@ def sse_response(
     always captured for the log.
     """
     created = int(time.time())
-    outcome = _Outcome(chunks, on_done)
+    outcome = _Outcome(primed, on_done)
 
     async def body() -> AsyncIterator[str]:
         usage: Usage | None = None
@@ -98,13 +156,23 @@ def sse_response(
             return _event(chunk_to_openai(chunk, id=request_id, model=model, created=created))
 
         try:
-            pending = [first] if first is not None else []
-            for chunk in pending:
+            for chunk in primed.buffered:
                 if (event := render(chunk)) is not None:
                     yield event
-            async for chunk in chunks:
-                if (event := render(chunk)) is not None:
-                    yield event
+            ended = False
+            if primed.pending is not None:
+                try:
+                    chunk = await primed.pending
+                except StopAsyncIteration:
+                    ended = True
+                else:
+                    if (event := render(chunk)) is not None:
+                        yield event
+                primed.pending = None
+            if not ended:
+                async for chunk in primed.chunks:
+                    if (event := render(chunk)) is not None:
+                        yield event
             yield _event("[DONE]")
         except ProviderError as exc:
             # Headers are already sent, so the error can only travel inside the stream.

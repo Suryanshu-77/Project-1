@@ -8,7 +8,7 @@ import httpx
 import pytest
 
 from tests.api.helpers import body, gateway, openai_chunk, sse
-from tierwise.api.streaming import sse_response
+from tierwise.api.streaming import Primed, sse_response
 from tierwise.schema import StreamChunk, Usage
 
 
@@ -97,8 +97,7 @@ async def test_stream_client_disconnect_closes_upstream_and_logs_499() -> None:
     chunks = upstream()
     first = await anext(chunks)
     response = sse_response(
-        chunks,
-        first,
+        Primed(chunks, [first]),
         request_id="r",
         model="m",
         headers={},
@@ -142,8 +141,7 @@ async def test_disconnect_before_body_starts_still_logs_and_closes_upstream() ->
         StreamChunk(content="a"), StreamChunk(content="b"), closed=closed
     )
     response = sse_response(
-        chunks,
-        first,
+        Primed(chunks, [first]),
         request_id="r",
         model="m",
         headers={},
@@ -167,8 +165,7 @@ async def test_unexpected_exception_mid_stream_emits_error_and_logs_502() -> Non
     outcome: Outcome = []
     chunks, first = await _started(StreamChunk(content="a"), error=ValueError("bug"))
     response = sse_response(
-        chunks,
-        first,
+        Primed(chunks, [first]),
         request_id="r",
         model="m",
         headers={},

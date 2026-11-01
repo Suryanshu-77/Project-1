@@ -66,6 +66,7 @@ def create_app(
             config.breaker_failures, config.breaker_window_s, config.breaker_cooldown_s
         )
         app.state.retry = RetryPolicy(config.retries, config.retry_base_s, config.retry_max_s)
+        app.state.stream_hold = (config.stream_hold_s, config.stream_hold_bytes)
 
         # Loading and warming the ONNX session blocks; keep it off the event loop.
         learned = await asyncio.to_thread(load_learned, config)
