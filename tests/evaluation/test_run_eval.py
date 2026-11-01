@@ -39,3 +39,19 @@ def test_plot_writes_png(tmp_path: Path) -> None:
     path = tmp_path / "p.png"
     plot(report, path)
     assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_reports_several_targets() -> None:
+    report = evaluate(_rows(), {"perfect": PERFECT}, "toy", "c", "s")
+    saved = report.routers["perfect"]["cost_saved_at"]
+    assert set(saved) == {"0.95", "0.98", "0.99"}
+    assert saved["0.95"] == pytest.approx(report.routers["perfect"]["cost_saved_at_95"])
+
+
+def test_stored_points_are_thinned_but_keep_endpoints() -> None:
+    rng = np.random.default_rng(0)
+    rows = [EvalRow(f"p{i}", float(rng.random()), 1.0, 1.0, 10.0) for i in range(1000)]
+    report = evaluate(rows, {"random": rng.random(1000)}, "toy", "c", "s")
+    points = report.routers["random"]["points"]
+    assert len(points) <= 201
+    assert points[0][0] == pytest.approx(0.1) and points[-1] == pytest.approx([1.0, 1.0])

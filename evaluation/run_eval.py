@@ -20,6 +20,9 @@ from evaluation.scorers import hybrid_scores, learned_scores, rules_scores
 
 OUT_DIR = Path("docs/benchmark")
 TARGET = 0.95
+# SPROUT's cheap model alone reaches 95% of the strong one, so stricter targets are reported too
+TARGETS = (0.95, 0.98, 0.99)
+MAX_STORED_POINTS = 200  # the JSON keeps a thinned curve; metrics use every point
 PAIRS = {"heldout": ("Mixtral-8x7B", "GPT-4"), "sprout": ("gpt-4o-mini", "gpt-4o")}
 
 
@@ -42,6 +45,14 @@ def _single_threshold(points: list[Point], target: float) -> Point | None:
     """The cheapest point a single fixed threshold reaches at `target` quality."""
     qualifying = [p for p in points if p.quality_frac >= target]
     return min(qualifying, key=lambda p: p.cost_frac) if qualifying else None
+
+
+def _thin(points: list[Point], limit: int = MAX_STORED_POINTS) -> list[Point]:
+    """At most limit + 1 points, evenly spaced along the curve, endpoints included."""
+    if len(points) <= limit + 1:
+        return points
+    keep = sorted({round(i * (len(points) - 1) / limit) for i in range(limit + 1)})
+    return [points[i] for i in keep]
 
 
 def _auc(points: list[Point]) -> float:
@@ -86,8 +97,9 @@ def evaluate(
             "cost_saved_at_95": cost_saved_at(points, TARGET),  # interpolated (randomized mix)
             "cost_saved_at_95_single_threshold": saved_single,
             "misroutes_at_95": missed,
+            "cost_saved_at": {f"{t:.2f}": cost_saved_at(points, t) for t in TARGETS},
             "auc_cost_quality": _auc(points),
-            "points": [[p.cost_frac, p.quality_frac] for p in points],
+            "points": [[p.cost_frac, p.quality_frac] for p in _thin(points)],
         }
     return report
 
@@ -151,10 +163,11 @@ def main(dataset: str, limit: int | None) -> int:
     (OUT_DIR / f"{dataset}.json").write_text(json.dumps(report.to_json(), indent=1) + "\n")
     plot(report, OUT_DIR / f"{dataset}_pareto.png")
 
-    print(f"\n{'router':<10}{'saved@95':>12}{'single thr':>12}{'misroutes':>11}{'AUC':>8}")
+    header = "".join(f"{f'saved@{t:.0%}':>12}" for t in TARGETS)
+    print(f"\n{'router':<10}{header}{'single@95%':>12}{'misroutes':>11}{'AUC':>8}")
     for name, r in report.routers.items():
-        print(f"{name:<10}{_fmt(r['cost_saved_at_95']):>12}"
-              f"{_fmt(r['cost_saved_at_95_single_threshold']):>12}"
+        saved = "".join(f"{_fmt(v):>12}" for v in r["cost_saved_at"].values())
+        print(f"{name:<10}{saved}{_fmt(r['cost_saved_at_95_single_threshold']):>12}"
               f"{r['misroutes_at_95']!s:>11}{r['auc_cost_quality']:>8.3f}")  # fmt: skip
     print(f"low-confidence share (hybrid): {low_confidence:.1%}")
     return 0
