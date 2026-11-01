@@ -25,6 +25,7 @@ async def test_rate_limited_is_429_with_retry_after() -> None:
 
 import asyncio  # noqa: E402
 from pathlib import Path  # noqa: E402
+from typing import Any  # noqa: E402
 
 from tierwise.api.streaming import Primed, sse_response  # noqa: E402
 from tierwise.schema import StreamChunk  # noqa: E402
@@ -141,3 +142,46 @@ async def test_stream_failing_after_content_still_debits_an_estimate(tmp_path: P
         spent = app.state.budgets.spent(row.id)
         assert app.state.budgets.reserved(row.id) == 0.0
     assert spent > 0  # the tokens were generated and billed upstream
+
+
+async def _cancel_once(app: Any, client: httpx.AsyncClient, key: str, ready: Any) -> None:
+    """Start a request, wait until `ready()` holds, then cancel it like a client disconnect."""
+    task = asyncio.create_task(_chat(client, key))
+    for _ in range(200):
+        if ready():
+            break
+        await asyncio.sleep(0.01)
+    assert ready(), "the request never reached the point under test"
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+
+async def test_cancelled_request_releases_reservation(tmp_path: Path) -> None:
+    async def hang(request: httpx.Request) -> httpx.Response:
+        await asyncio.Event().wait()  # never answers: the client gives up first
+        raise AssertionError("unreachable")
+
+    async with gateway(hang, db_dir=tmp_path, require_api_key=True) as (app, client):
+        key, row = await make_key(app, budget=10.0)
+        budgets = app.state.budgets
+        await _cancel_once(app, client, key, lambda: budgets.reserved(row.id) > 0)
+        assert budgets.reserved(row.id) == 0.0 and budgets.spent(row.id) == 0.0
+    [logged] = await app.state.log.fetch_all()
+    assert logged.status == 499
+
+
+async def test_cancel_before_reservation_is_safe(monkeypatch: pytest.MonkeyPatch) -> None:
+    from tierwise.api import routes
+
+    entered: list[bool] = []
+
+    async def stuck_route(*args: Any, **kwargs: Any) -> Any:
+        entered.append(True)
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(routes, "route", stuck_route)
+    async with gateway(require_api_key=True) as (app, client):
+        key, row = await make_key(app, budget=10.0)
+        await _cancel_once(app, client, key, lambda: bool(entered))
+        assert app.state.budgets.reserved(row.id) == 0.0
