@@ -2,6 +2,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from tierwise.store import RequestLog, RequestRecord
 
 
@@ -146,3 +148,123 @@ async def test_new_fields_round_trip(tmp_path: Path) -> None:
     await log.stop()
     [row] = await log.fetch_all()
     assert (row.effort, row.tokens_reasoning) == ("high", 3)
+
+
+# --- M7a: keys and never-dropped debits --------------------------------------------------
+
+
+async def test_create_list_revoke_key(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    row = await log.create_key("team-a", "h" * 64, "tw-abcdefg", 50.0, 60)
+    [listed] = await log.list_keys()
+    assert listed == row and listed.revoked_ts is None
+    assert await log.revoke_key(row.id) is True
+    assert await log.revoke_key(row.id) is False
+    assert await log.revoke_key("nope") is False
+    [revoked] = await log.list_keys()
+    assert revoked.revoked_ts is not None
+    await log.stop()
+
+
+async def test_duplicate_key_hash_rejected(tmp_path: Path) -> None:
+    import pytest
+    from sqlalchemy.exc import IntegrityError
+
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    await log.create_key("a", "same", "tw-1", None, None)
+    with pytest.raises(IntegrityError):
+        await log.create_key("b", "same", "tw-2", None, None)
+    await log.stop()
+
+
+async def test_debits_aggregate_per_key_and_month(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit_debit("a", "2026-11", 0.01)
+    log.submit_debit("a", "2026-11", 0.02)
+    log.submit_debit("a", "2026-12", 0.05)
+    await log.stop()
+    usage = sorted(await log.fetch_usage())
+    assert [(k, m, round(s, 9), n) for k, m, s, n in usage] == [
+        ("a", "2026-11", 0.03, 2),
+        ("a", "2026-12", 0.05, 1),
+    ]
+
+
+async def test_debits_accumulate_across_flushes(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+    await log.start()
+    log.submit_debit("a", "2026-11", 0.01)
+    await asyncio.sleep(0.1)
+    assert not log.pending_debits
+    log.submit_debit("a", "2026-11", 0.02)
+    await log.stop()
+    [(_, _, spent, count)] = await log.fetch_usage()
+    assert (round(spent, 9), count) == (0.03, 2)
+
+
+async def test_debits_survive_failed_flush(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+    await log.start()
+    real = log._upsert_debits
+    calls = {"n": 0}
+
+    async def flaky(conn: object, rows: object) -> None:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("database is down")
+        await real(conn, rows)  # type: ignore[arg-type]
+
+    log._upsert_debits = flaky  # type: ignore[method-assign]
+    log.submit_debit("a", "2026-11", 0.04)
+    await asyncio.sleep(0.1)
+    await log.stop()
+    [(_, _, spent, count)] = await log.fetch_usage()
+    assert (round(spent, 9), count) == (0.04, 1)  # written once, after the retry
+    assert calls["n"] >= 2
+
+
+async def test_debits_never_dropped_when_telemetry_queue_full(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path), max_queue=1)
+    log.submit(_record(1))  # not started: the queue stays full
+    log.submit(_record(2))
+    log.submit_debit("a", "2026-11", 0.5)
+    assert log.dropped == 1
+    await log.start()
+    await log.stop()
+    [(_, _, spent, _)] = await log.fetch_usage()
+    assert spent == 0.5
+
+
+async def test_load_month_spend(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit_debit("a", "2026-11", 0.25)
+    log.submit_debit("b", "2026-10", 9.0)
+    await log.stop()
+    await log.start()
+    assert await log.load_month_spend("2026-11") == {"a": 0.25}
+    await log.stop()
+
+
+async def test_stop_gives_up_on_unwritable_debits_and_logs_them(
+    tmp_path: Path, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    import logging
+    import time
+
+    caplog.set_level(logging.ERROR)
+    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+    await log.start()
+
+    async def down(conn: object, rows: object) -> None:
+        raise RuntimeError("disk full")
+
+    log._upsert_debits = down  # type: ignore[method-assign]
+    log.submit_debit("key9", "2026-11", 0.42)
+    started = time.monotonic()
+    await asyncio.wait_for(log.stop(), timeout=5)
+    assert time.monotonic() - started < 3
+    assert "key9" in caplog.text and "2026-11" in caplog.text and "0.42" in caplog.text

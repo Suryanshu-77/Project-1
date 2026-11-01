@@ -125,6 +125,45 @@ uv run python scripts/bench_router.py             # p50 latency, budget 10 ms
 
 Set `TIERWISE_LEARNED_ROUTER=false` to turn it off; `TIERWISE_ROUTER_DIR` points elsewhere.
 
+## Keys, budgets and rate limits
+
+Give each team or app its own key, with a monthly spending cap and a request rate:
+
+```bash
+tierwise keys create --name analytics --budget 50 --rpm 60   # prints the key once
+tierwise keys list                                           # spend this month, no secrets
+tierwise keys revoke 3f9c2a1b7d4e
+```
+
+Clients send the key the way they would an OpenAI key:
+
+```python
+client = OpenAI(base_url="http://localhost:8000/v1", api_key="tw-...")
+```
+
+- **Keys** are stored only as SHA-256 hashes. Set `TIERWISE_REQUIRE_KEY=true` to reject
+  requests without a valid key (401 `invalid_api_key`). Even with that off, a valid key is
+  still used, so its spend is tracked. The gateway picks up keys created or revoked by the
+  CLI within 30 s.
+- **Rate limit:** a token bucket per key. A key can burst up to its `--rpm`, then gets
+  `--rpm` requests per minute. Beyond that the response is 429 `rate_limited` with a
+  `Retry-After` header.
+- **Budget:** per UTC calendar month.
+  - **Before calling a model,** the request reserves its estimated cost. A reservation that
+    would exceed the budget gets 429 `budget_exceeded`. That stops a burst of concurrent
+    requests from all passing a check before any of them is charged.
+  - **Reservations are estimates.** Without `max_tokens`, the output is estimated at 512
+    tokens, so a key can end the month over its budget by the real cost of the requests
+    already in flight. Set `max_tokens` to make the cap tight.
+  - **Enforcement:** budgets and rate limits are enforced only with
+    `TIERWISE_REQUIRE_KEY=true`. Otherwise a client can drop its key and be served
+    anonymously.
+  - **After the call,** the actual cost is charged and the reservation is released. Failed
+    requests cost nothing, and cache hits cost $0.
+  - **Persistence:** spend lives in memory and is written to the `usage_monthly` table
+    without ever being dropped. A failed database write is retried, and shutdown waits for
+    it.
+
 ## Reliability
 
 A request survives a failing model or provider:

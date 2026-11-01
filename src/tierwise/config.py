@@ -44,5 +44,10 @@ class Settings(BaseSettings):
     cache_ttl_s: float = 3600
     cache_max_entries: int = 10_000
     cache_max_temperature: float = 0.3
+    require_api_key: bool = Field(
+        default=False,
+        validation_alias=AliasChoices("TIERWISE_REQUIRE_KEY", "require_api_key"),
+    )
+    keys_refresh_s: float = 30.0
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))
