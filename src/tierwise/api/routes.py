@@ -44,7 +44,8 @@ from tierwise.router.modes import VIRTUAL_MODELS, EmptyAfterTag, UnknownRoutingV
 from tierwise.router.router import RoutingResult, route
 from tierwise.schema import ChatRequest, ChatResponse, FinishReason, StreamChunk, Usage
 from tierwise.selector import NoEligibleModel, select
-from tierwise.store import KeyRow, RequestLog, RequestRecord
+from tierwise.shadow import should_sample
+from tierwise.store import KeyRow, RequestLog, RequestRecord, ShadowSample
 from tierwise.telemetry import provider_span, tracer
 from tierwise.tokens import estimate_text, estimate_tokens
 
@@ -292,9 +293,35 @@ async def _chat_completions(req: ChatRequest, request: Request) -> Response:
                 return _cached_response(hit, result, recorder, hit_spec)
 
         def keep(content: str, finish: str, usage: Usage, spec: ModelSpec) -> None:
-            """Cache only complete text answers."""
-            if cache is not None and cache_key is not None and content and finish == "stop":
+            """Cache, and maybe sample for the flywheel, only complete text answers."""
+            if not content or finish != "stop":
+                return
+            if cache is not None and cache_key is not None:
                 cache.store(cache_key, CachedAnswer(content, spec.id, spec.provider, usage, finish))
+            try:  # the answer is already the client's: a flywheel bug must never cost them it
+                sample(content, spec)
+            except Exception:
+                logger.exception("shadow sampling failed for %s", recorder.request_id)
+
+        def sample(content: str, spec: ModelSpec) -> None:
+            decision = result.decision
+            if key is None or decision is None:
+                return
+            if not should_sample(key, decision, state.store_payloads, state.shadow_rate):
+                return
+            shadow = ShadowSample(
+                id=recorder.request_id,
+                ts=time.time(),
+                key_id=key.id,
+                request_json=result.request.model_dump_json(exclude_none=True),
+                routed_model=spec.id,
+                routed_answer=content,
+                difficulty=decision.difficulty,
+                confidence=decision.confidence,
+                source=recorder.source,
+            )
+            if state.log.submit_sample(shadow):
+                state.metrics.shadow_sample()
 
         with tracer.start_as_current_span("tierwise.select"):
             plan = _choose(result, state, recorder)

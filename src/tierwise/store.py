@@ -6,6 +6,9 @@ response, and a single writer means SQLite never sees competing writers.
 Budget debits take a separate path: they are summed in memory per (key, month) and upserted
 by the same writer. Unlike telemetry rows they are never dropped; a failed write keeps them
 for the next flush, and shutdown waits until they are written.
+
+Shadow samples (opted-in prompts and answers for the data flywheel) have their own bounded
+buffer, drained by the same writer; like telemetry they are dropped, and counted, when full.
 """
 
 import asyncio
@@ -13,6 +16,7 @@ import logging
 import time
 import uuid
 from dataclasses import asdict, dataclass
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
@@ -24,6 +28,7 @@ from sqlalchemy import (
     String,
     Table,
     event,
+    func,
     insert,
     inspect,
     select,
@@ -107,6 +112,28 @@ api_keys_table = Table(
     Column("rpm", Integer),
     Column("created_ts", Float, nullable=False),
     Column("revoked_ts", Float),
+    Column("allow_shadow", Boolean),  # nullable so older databases can gain it; NULL = no
+)
+shadow_samples_table = Table(
+    "shadow_samples",
+    metadata,
+    Column("id", String, primary_key=True),
+    Column("ts", Float, nullable=False, index=True),
+    Column("key_id", String, nullable=False),
+    Column("request_json", String, nullable=False),
+    Column("routed_model", String, nullable=False),
+    Column("routed_answer", String, nullable=False),
+    Column("difficulty", Float),
+    Column("confidence", Float),
+    Column("source", String, nullable=False),
+    Column("status", String, nullable=False, index=True),  # pending | labeled | failed
+    Column("contrast_model", String),
+    Column("contrast_answer", String),
+    Column("judge_score", Integer),
+    Column("needs_strong", Boolean),
+    Column("label_cost_usd", Float, nullable=False),
+    Column("labeled_ts", Float),
+    Column("error", String),
 )
 usage_monthly_table = Table(
     "usage_monthly",
@@ -128,6 +155,38 @@ class KeyRow:
     rpm: int | None
     created_ts: float
     revoked_ts: float | None
+    allow_shadow: bool = False
+
+
+@dataclass(frozen=True)
+class ShadowSample:
+    """One opted-in routed answer, waiting for (or holding) its flywheel label."""
+
+    id: str
+    ts: float
+    key_id: str
+    request_json: str
+    routed_model: str
+    routed_answer: str
+    difficulty: float | None
+    confidence: float | None
+    source: str
+    status: str = "pending"
+    contrast_model: str | None = None
+    contrast_answer: str | None = None
+    judge_score: int | None = None
+    needs_strong: bool | None = None
+    label_cost_usd: float = 0.0
+    labeled_ts: float | None = None
+    error: str | None = None
+
+
+def _month_bounds(month: str) -> tuple[float, float]:
+    """[start, end) of a "YYYY-MM" month in UTC, as timestamps."""
+    year, mon = (int(part) for part in month.split("-"))
+    start = datetime(year, mon, 1, tzinfo=UTC)
+    end = datetime(year + mon // 12, mon % 12 + 1, 1, tzinfo=UTC)
+    return start.timestamp(), end.timestamp()
 
 
 def _sqlite_pragmas(dbapi_connection: Any, _: Any) -> None:
@@ -139,21 +198,22 @@ def _sqlite_pragmas(dbapi_connection: Any, _: Any) -> None:
 
 
 def _add_missing_columns(conn: Connection) -> list[str]:
-    """Bring an older ``requests`` table up to date by adding new nullable columns.
+    """Bring older ``requests`` and ``api_keys`` tables up to date by adding new nullable columns.
 
     ``create_all`` never alters an existing table, so a database written by an earlier
     version would otherwise reject every insert. Existing rows keep NULL in the new columns.
     """
-    present = {column["name"] for column in inspect(conn).get_columns("requests")}
     added = []
-    for column in requests_table.columns:
-        if column.name in present:
-            continue
-        if not column.nullable:
-            raise RuntimeError(f"cannot add required column '{column.name}' to existing table")
-        column_type = column.type.compile(dialect=conn.dialect)
-        conn.execute(text(f"ALTER TABLE requests ADD COLUMN {column.name} {column_type}"))
-        added.append(column.name)
+    for table in (requests_table, api_keys_table):
+        present = {column["name"] for column in inspect(conn).get_columns(table.name)}
+        for column in table.columns:
+            if column.name in present:
+                continue
+            if not column.nullable:
+                raise RuntimeError(f"cannot add required column '{column.name}' to {table.name}")
+            column_type = column.type.compile(dialect=conn.dialect)
+            conn.execute(text(f"ALTER TABLE {table.name} ADD COLUMN {column.name} {column_type}"))
+            added.append(column.name)
     return added
 
 
@@ -167,6 +227,8 @@ class RequestLog:
     ) -> None:
         self._db_url = db_url
         self._queue: asyncio.Queue[RequestRecord] = asyncio.Queue(maxsize=max_queue)
+        self._samples: list[ShadowSample] = []
+        self._max_samples = max_queue
         self._batch_size = batch_size
         self._flush_interval = flush_interval
         self._engine: AsyncEngine | None = None
@@ -194,6 +256,14 @@ class RequestLog:
         except asyncio.QueueFull:
             self.dropped += 1
 
+    def submit_sample(self, sample: ShadowSample) -> bool:
+        """Queue a shadow sample without blocking; False when it was dropped (buffer full)."""
+        if len(self._samples) >= self._max_samples:
+            self.dropped += 1
+            return False
+        self._samples.append(sample)
+        return True
+
     def submit_debit(self, key_id: str, month: str, cost_usd: float) -> None:
         """Charge a key; summed in memory until the writer upserts it. Never dropped."""
         spent, count = self._debits.get((key_id, month), (0.0, 0))
@@ -204,9 +274,16 @@ class RequestLog:
         return dict(self._debits)
 
     async def create_key(
-        self, name: str, key_hash: str, prefix: str, budget: float | None, rpm: int | None
+        self,
+        name: str,
+        key_hash: str,
+        prefix: str,
+        budget: float | None,
+        rpm: int | None,
+        allow_shadow: bool = False,
     ) -> KeyRow:
-        row = KeyRow(uuid.uuid4().hex[:12], name, key_hash, prefix, budget, rpm, time.time(), None)
+        key_id = uuid.uuid4().hex[:12]
+        row = KeyRow(key_id, name, key_hash, prefix, budget, rpm, time.time(), None, allow_shadow)
         async with self._require_engine().begin() as conn:
             await conn.execute(insert(api_keys_table), [asdict(row)])
         return row
@@ -214,7 +291,9 @@ class RequestLog:
     async def list_keys(self) -> list[KeyRow]:
         async with self._require_engine().connect() as conn:
             rows = await conn.execute(select(api_keys_table).order_by(api_keys_table.c.created_ts))
-            return [KeyRow(**row._mapping) for row in rows]
+            return [
+                KeyRow(**{**row._mapping, "allow_shadow": bool(row.allow_shadow)}) for row in rows
+            ]
 
     async def revoke_key(self, key_id: str) -> bool:
         """False when the key doesn't exist or is already revoked."""
@@ -248,6 +327,34 @@ class RequestLog:
             await engine.dispose()
         return usage
 
+    async def pending_samples(self, limit: int) -> list[ShadowSample]:
+        table = shadow_samples_table
+        query = select(table).where(table.c.status == "pending").order_by(table.c.ts).limit(limit)
+        async with self._require_engine().connect() as conn:
+            return [ShadowSample(**row._mapping) for row in await conn.execute(query)]
+
+    async def labeled_samples(self) -> list[ShadowSample]:
+        table = shadow_samples_table
+        query = select(table).where(table.c.needs_strong.is_not(None)).order_by(table.c.ts)
+        async with self._require_engine().connect() as conn:
+            return [ShadowSample(**row._mapping) for row in await conn.execute(query)]
+
+    async def save_label(self, sample: ShadowSample) -> None:
+        table = shadow_samples_table
+        values = {k: v for k, v in asdict(sample).items() if k != "id"}
+        async with self._require_engine().begin() as conn:
+            await conn.execute(update(table).where(table.c.id == sample.id).values(**values))
+
+    async def label_spend(self, month: str) -> float:
+        """USD spent on flywheel labels (failed ones included) in a "YYYY-MM" month, UTC."""
+        table = shadow_samples_table
+        start, end = _month_bounds(month)
+        query = select(func.coalesce(func.sum(table.c.label_cost_usd), 0.0)).where(
+            table.c.labeled_ts >= start, table.c.labeled_ts < end
+        )
+        async with self._require_engine().connect() as conn:
+            return float((await conn.execute(query)).scalar_one())
+
     def _require_engine(self) -> AsyncEngine:
         if self._engine is None:
             raise RuntimeError("RequestLog.start() has not been called")
@@ -273,10 +380,14 @@ class RequestLog:
         return records
 
     async def _run(self) -> None:
-        while not (self._closing and self._queue.empty() and not self._debits):
+        while not (
+            self._closing and self._queue.empty() and not self._debits and not self._samples
+        ):
             batch = await self._next_batch()
             if batch:
                 await self._write(batch)
+            if self._samples:
+                await self._write_samples()
             if self._debits:
                 await self._flush_debits()
 
@@ -343,6 +454,16 @@ class RequestLog:
             except TimeoutError:
                 break
         return batch
+
+    async def _write_samples(self) -> None:
+        batch, self._samples = self._samples[: self._batch_size], self._samples[self._batch_size :]
+        try:
+            async with self._require_engine().begin() as conn:
+                await conn.execute(insert(shadow_samples_table), [asdict(s) for s in batch])
+        except Exception as exc:
+            # no traceback: driver errors quote the bound parameters, i.e. prompts and answers
+            logger.error("failed to write %d shadow samples: %s", len(batch), type(exc).__name__)
+            self.dropped += len(batch)
 
     async def _write(self, batch: list[RequestRecord]) -> None:
         assert self._engine is not None

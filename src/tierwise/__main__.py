@@ -7,13 +7,15 @@ import sys
 import time
 from pathlib import Path
 
+import httpx
 import uvicorn
 
-from tierwise import fetch
-from tierwise.api.app import create_app
+from tierwise import fetch, flywheel
+from tierwise.api.app import LIMITS, TIMEOUT, build_providers, create_app
 from tierwise.budgets import month_of
-from tierwise.config import CACHE_ROUTER_DIR, Settings
+from tierwise.config import CACHE_ROUTER_DIR, Settings, registry_file
 from tierwise.keys import generate_key, hash_key
+from tierwise.registry import load_registry
 from tierwise.store import RequestLog
 
 
@@ -42,6 +44,11 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--name", required=True)
     create.add_argument("--budget", type=_budget, help="monthly budget in USD")
     create.add_argument("--rpm", type=_rpm, help="requests per minute")
+    create.add_argument(
+        "--allow-shadow",
+        action="store_true",
+        help="let the data flywheel sample this key's traffic",
+    )
     keys.add_parser("list", help="list keys (no secrets)")
     revoke = keys.add_parser("revoke", help="revoke a key by id")
     revoke.add_argument("id")
@@ -49,6 +56,12 @@ def _parser() -> argparse.ArgumentParser:
         "fetch-model", help="download the learned router's encoder (90 MB, sha256-checked)"
     )
     fetch_model.add_argument("--out", type=Path, default=CACHE_ROUTER_DIR)
+    fw = commands.add_parser("flywheel", help="data flywheel: label shadow samples")
+    fw_actions = fw.add_subparsers(dest="action", required=True)
+    label = fw_actions.add_parser(
+        "label", help="contrast + judge pending samples (paid calls, monthly budget)"
+    )
+    label.add_argument("--limit", type=_rpm, default=500, help="most samples to label this run")
     return parser
 
 
@@ -58,7 +71,9 @@ async def _keys(args: argparse.Namespace, db_url: str) -> int:
     try:
         if args.action == "create":
             key = generate_key()
-            row = await log.create_key(args.name, hash_key(key), key[:10], args.budget, args.rpm)
+            row = await log.create_key(
+                args.name, hash_key(key), key[:10], args.budget, args.rpm, args.allow_shadow
+            )
             print(f"id: {row.id}\nkey: {key}\nStore the key now: it is not shown again.")
             return 0
         if args.action == "revoke":
@@ -80,6 +95,40 @@ async def _keys(args: argparse.Namespace, db_url: str) -> int:
         await log.stop()
 
 
+async def _flywheel_label(args: argparse.Namespace, settings: Settings) -> int:
+    registry = load_registry(registry_file(settings))
+    judge = registry.get(settings.judge_model or registry.baseline_model)
+    if judge is None:
+        print(f"judge model {settings.judge_model!r} is not in the registry", file=sys.stderr)
+        return 1
+    clients: list[httpx.AsyncClient] = []
+
+    def client_for(_: str) -> httpx.AsyncClient:
+        clients.append(httpx.AsyncClient(limits=LIMITS, timeout=TIMEOUT))
+        return clients[-1]
+
+    log = RequestLog(settings.db_url)
+    await log.start()
+    try:
+        providers = build_providers(settings, client_for)
+        run = await flywheel.label_pending(
+            log, registry, providers, judge, settings.shadow_budget_usd, args.limit
+        )
+    except ValueError as exc:
+        print(f"flywheel label failed: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        await log.stop()
+        for client in clients:
+            await client.aclose()
+    print(f"labeled {run.labeled}, failed {run.failed}, left {run.left}; "
+          f"spent ${run.spent_usd:.2f} this run")  # fmt: skip
+    if run.stopped_by_budget:
+        print(f"stopped: monthly label budget ${settings.shadow_budget_usd:.2f} reached "
+              "(TIERWISE_SHADOW_BUDGET_USD)")  # fmt: skip
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "fetch-model":
@@ -91,6 +140,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"wrote {path}")
         return 0
     settings = Settings()
+    if args.command == "flywheel":
+        return asyncio.run(_flywheel_label(args, settings))
     if args.command == "keys":
         return asyncio.run(_keys(args, settings.db_url))
     uvicorn.run(create_app(settings), host=settings.host, port=settings.port)

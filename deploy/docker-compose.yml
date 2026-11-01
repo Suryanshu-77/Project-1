@@ -38,6 +38,8 @@ services:
       TIERWISE_DB_URL: postgresql+asyncpg://tierwise:tierwise@postgres:5432/tierwise
       TIERWISE_REGISTRY: deploy/registry.compose.yaml
       TIERWISE_REQUIRE_KEY: "true"
+      TIERWISE_STORE_PAYLOADS: "true"  # flywheel opt-in 1 of 3; keys also need --allow-shadow
+      TIERWISE_SHADOW_RATE: "${TIERWISE_SHADOW_RATE:-0.02}"
       KEYS_REFRESH_S: "2"
       OLLAMA_BASE_URL: http://fake-upstream:8080/v1
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4318

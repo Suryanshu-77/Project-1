@@ -3,7 +3,7 @@
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 
 import httpx
@@ -34,6 +34,26 @@ LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=250, keepal
 TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=2.0)
 
 
+def build_providers(
+    config: Settings, client_for: Callable[[str], httpx.AsyncClient]
+) -> dict[str, Provider]:
+    """An adapter for every provider whose key (or URL) is configured."""
+    providers: dict[str, Provider] = {}
+    if config.anthropic_api_key:
+        providers["anthropic"] = AnthropicProvider(
+            client_for("anthropic"), config.anthropic_api_key
+        )
+    if config.openai_api_key:
+        providers["openai"] = OpenAIProvider(
+            client_for("openai"), config.openai_api_key, config.openai_base_url
+        )
+    if config.gemini_api_key:
+        providers["gemini"] = GeminiProvider(client_for("gemini"), config.gemini_api_key)
+    if config.ollama_base_url:
+        providers["ollama"] = OllamaProvider(client_for("ollama"), config.ollama_base_url)
+    return providers
+
+
 def create_app(
     settings: Settings | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
@@ -49,24 +69,12 @@ def create_app(
 
         # One pooled client per provider for the app's whole life: no per-request handshakes.
         clients: dict[str, httpx.AsyncClient] = {}
-        providers: dict[str, Provider] = {}
 
         def client_for(name: str) -> httpx.AsyncClient:
             clients[name] = httpx.AsyncClient(limits=LIMITS, timeout=TIMEOUT, transport=transport)
             return clients[name]
 
-        if config.anthropic_api_key:
-            providers["anthropic"] = AnthropicProvider(
-                client_for("anthropic"), config.anthropic_api_key
-            )
-        if config.openai_api_key:
-            providers["openai"] = OpenAIProvider(
-                client_for("openai"), config.openai_api_key, config.openai_base_url
-            )
-        if config.gemini_api_key:
-            providers["gemini"] = GeminiProvider(client_for("gemini"), config.gemini_api_key)
-        if config.ollama_base_url:
-            providers["ollama"] = OllamaProvider(client_for("ollama"), config.ollama_base_url)
+        providers = build_providers(config, client_for)
         app.state.clients = clients
         app.state.providers = providers
         app.state.affinity = AffinityTable()
@@ -98,6 +106,8 @@ def create_app(
         keys.replace(await log.list_keys())
         app.state.keys = keys
         app.state.require_api_key = config.require_api_key
+        app.state.store_payloads = config.store_payloads
+        app.state.shadow_rate = config.shadow_rate
         app.state.limiter = RateLimiter()
         app.state.metrics = Metrics(
             app.state.breakers, log, [m.id for m in app.state.registry.models]

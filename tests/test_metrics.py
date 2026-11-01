@@ -94,3 +94,10 @@ def test_render_is_prometheus_text(tmp_path: Path) -> None:
     body, content_type = _metrics().render()
     assert content_type.startswith("text/plain")
     assert b"# TYPE tierwise_requests_total counter" in body
+
+
+def test_shadow_metric_exported() -> None:
+    metrics = _metrics()
+    metrics.shadow_sample()
+    metrics.shadow_sample()
+    assert _value(metrics, "tierwise_shadow_samples_total") == 2.0
