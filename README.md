@@ -8,17 +8,22 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 of its cost (random routing: 63%). Method, out-of-distribution results and limitations are in
 [BENCHMARK.md](BENCHMARK.md).
 
-Status: early development (M5: rules plus a learned router, measured by an eval harness, across
-four providers with streaming, a model registry, cost tracking and a request log).
+Status: 0.8.0, milestones M0–M8 done: learned routing, reliability, keys and budgets,
+observability and a PyPI release. M9, the data flywheel, is next. See [CHANGELOG.md](CHANGELOG.md).
 Design: [docs/superpowers/specs/2026-11-01-tierwise-design.md](docs/superpowers/specs/2026-11-01-tierwise-design.md)
 
 ## Quickstart
 
 ```bash
-cp .env.example .env        # then add keys for the providers you use
-uv sync
-uv run python -m tierwise   # serves http://127.0.0.1:8000
+pip install tierwise        # or run it without installing: uvx tierwise
+tierwise fetch-model        # optional: the 90 MB encoder for the learned router
+export ANTHROPIC_API_KEY=…  # any of the provider keys below (or put them in .env)
+tierwise                    # serves http://127.0.0.1:8000
 ```
+
+The default model registry ships with the package. Point `TIERWISE_REGISTRY` at your own copy
+to change models or prices. From a checkout, use `uv sync` and then `uv run tierwise`; the repo's
+`config/` and `models/router` take precedence over the packaged copies.
 
 Use it from any OpenAI SDK client by changing the base URL:
 
@@ -112,8 +117,15 @@ Trained on 32k prompts, 13% of which needed a strong model. Validation picked th
 logistic regression (0.745 vs 0.731 ROC-AUC) and a decision threshold of 0.15. On CPU the
 encoder plus classifier takes 6.3 ms at p50 (`scripts/bench_router.py`).
 
-The tokenizer and trained classifier are committed; the 90 MB ONNX encoder is not. Without it
-the gateway logs a warning and routes with rules only. To build it, or to retrain:
+The tokenizer and trained classifier are committed and ship in the wheel; the 90 MB ONNX encoder
+does not. Without it the gateway logs a warning and routes with rules only. Fetch it with
+`tierwise fetch-model`, which downloads the official Hugging Face export at a pinned commit and
+checks its sha256 before saving it to `~/.cache/tierwise/router/`, where the gateway finds it
+on its own. The gateway looks for `model.onnx` in the router directory first, then in that
+cache. Only use `--out DIR` with `TIERWISE_ROUTER_DIR=DIR` if `DIR` also holds `router.json`,
+`classifier.npz` and `tokenizer.json`. Otherwise the learned router turns itself off.
+
+To export it yourself, or to retrain:
 
 ```bash
 uv sync --group train
@@ -258,6 +270,21 @@ docker compose -f deploy/docker-compose.yml exec gateway tierwise keys create --
 
 `scripts/compose_smoke.py` checks the running stack end to end; CI runs it on every push.
 
+**Demo:** `uv run python scripts/demo.py` sends prompts of rising difficulty through the stack
+and shows what each one cost against always using the flagship:
+
+```text
+prompt                                            model   effort   reason              cost $
+hi, thanks                                        small   default  rules             0.000005
+What is the capital of France?                    small   default  rules             0.000005
+Translate 'good morning' into Spanish.            small   default  rules             0.000005
+Design a multi-tenant SaaS billing architectu...  large   default  rules             0.000385
+Debug this production outage: checkout latenc...  large   default  rules             0.000365
+Prove that the square root of 2 is irrational.    large   default  rules             0.000330
+
+total $0.001095 vs $0.001995 always-large: 45% saved
+```
+
 ## Providers
 
 | Provider | Enable with | Notes |
@@ -321,3 +348,24 @@ uv run pytest
 uv run ruff check .
 uv run mypy src
 ```
+
+### Releasing
+
+Releases go to PyPI from a tag through
+[Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no token is stored.
+
+1. **Once,** on pypi.org, add a *pending publisher*:
+   - project `tierwise`
+   - owner `Suryanshu-77`, repository `Project-1`
+   - workflow `release.yml`, environment `pypi`
+2. **Once,** in the repository settings, create the `pypi` environment. Add yourself as a
+   required reviewer so every publish waits for your approval.
+3. **Each release:** bump `version` in `pyproject.toml`, add a `CHANGELOG.md` entry, then:
+
+   ```bash
+   git tag v0.8.0
+   git push origin v0.8.0
+   ```
+
+The workflow checks that the tag matches the version, builds, smoke-tests the installed wheel
+from an empty directory (`scripts/wheel_smoke.py`), then publishes.

@@ -1,5 +1,6 @@
 """HTTP endpoints. ``auto``/``tier:*`` requests are routed; a concrete model id is served as-is."""
 
+import asyncio
 import logging
 import time
 import uuid
@@ -16,6 +17,7 @@ from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.api.auth import authenticate
 from tierwise.api.errors import GatewayError, gateway_error_from
 from tierwise.api.streaming import (
+    STATUS_CLIENT_CLOSED,
     STATUS_UPSTREAM_FAILED_MID_STREAM,
     Primed,
     prime_stream,
@@ -423,6 +425,12 @@ async def _chat_completions(req: ChatRequest, request: Request) -> Response:
             response, option, failovers = served.value, served.option, served.failovers
             spec = option.spec
         headers = served_by(spec, option, failovers)
+    except asyncio.CancelledError:
+        # The client went away mid-call. CancelledError is a BaseException, so none of the
+        # handlers below see it: without this, the reservation stays held all month.
+        settle(None)
+        recorder.done(None, STATUS_CLIENT_CLOSED, "client_closed")
+        raise
     except (GatewayError, ProviderError) as exc:
         settle(None)
         err = exc if isinstance(exc, GatewayError) else gateway_error_from(exc)

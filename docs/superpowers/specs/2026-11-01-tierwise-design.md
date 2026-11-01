@@ -1,7 +1,7 @@
 # tierwise — Design Spec
 
 *Cost-aware, self-hosted LLM gateway with a learned router.*
-Date: 2026-11-01 · Status: revision 4. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5).
+Date: 2026-11-01 · Status: revision 5. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5). Rev 5 adds packaging, model fetch and release (§3.10, milestone M8).
 
 ## 1. Problem and goal
 Teams overpay by sending every request to a flagship model, or lose quality by defaulting to cheap ones. **tierwise** sits between applications and model providers and decides, per request, which model to use. It picks the **cheapest model expected to answer well enough**, and it measures whether that bet paid off.
@@ -200,6 +200,13 @@ efforts:
 - OpenTelemetry spans: route, select, cache, provider call.
 - The Grafana dashboard ships as provisioned JSON.
 
+### 3.10 Packaging and release (milestone M8)
+- **Installed package works on its own.** The default registry and the small router artifacts (`classifier.npz`, `router.json`, `tokenizer.json`, `NOTICE`) ship inside the wheel under `tierwise/data/`. When the configured `registry_path` or `router_dir` doesn't exist, the gateway uses the packaged copy. Explicit env overrides (`TIERWISE_REGISTRY`, `TIERWISE_ROUTER_DIR`) still win, and a missing explicit path is an error, not a silent fallback.
+- **The 90 MB encoder is fetched, never bundled.** `tierwise fetch-model` downloads `onnx/model.onnx` from `sentence-transformers/all-MiniLM-L6-v2` at a pinned commit, verifies its sha256, and writes it atomically (temp file + rename) next to the router artifacts. Without it the gateway runs rules-only, as before. Startup never touches the network.
+- **Client cancellation releases money.** A request cancelled mid-call (client disconnect) settles its budget reservation and is logged with status 499. Breaker probes are already released by `serve`.
+- **Release.** A `v*` tag builds the sdist and wheel, smoke-installs the wheel in a clean venv, and publishes to PyPI through Trusted Publishing (no stored token), behind a `pypi` GitHub environment. Every CI run builds and smoke-installs the wheel too.
+- **Demo.** `scripts/demo.py` sends prompts of rising difficulty through the compose stack and prints model, effort, reason and cost per prompt against an always-flagship baseline. The README shows that output and a Grafana screenshot.
+
 ## 4. Data flow (non-streaming)
 auth → rate-limit → cache lookup → route → select → budget pre-check → call candidate[0] (retry, then failover) → normalize → cache store → log + metrics → respond with headers.
 
@@ -253,7 +260,7 @@ A static `router_model` decays as traffic and the registry change, so tierwise k
 | M5 | Eval harness, Pareto plot, registry calibration, `BENCHMARK.md` | Resume numbers produced |
 | M6 | Retry, failover, two-level circuit breakers, stream hold-until-first-content, semantic cache | Fault-injection tests pass, including an early stream abort that fails over |
 | M7 | Keys, budgets, rate limits, metrics, Grafana, OTel, docker-compose | `docker compose up` shows dashboard |
-| M8 | Docs, demo, PyPI release | Public, installable |
+| M8 | Docs, demo, PyPI release | `pip install` of the built wheel serves a request with the packaged registry; release workflow publishes on a tag |
 | M9 | Data flywheel: shadow sampling, offline judge, champion/challenger retrain | A challenger trained on shadow labels is promoted (or rejected) by the eval gate |
 
 ## 9. Learning hand-offs (`TODO(human)`)

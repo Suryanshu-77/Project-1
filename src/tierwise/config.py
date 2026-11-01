@@ -1,5 +1,9 @@
 """Gateway settings, read from the environment (and an optional .env file)."""
 
+from importlib.resources import files
+from importlib.resources.abc import Traversable
+from pathlib import Path
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -12,16 +16,16 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     gemini_api_key: str | None = None
     ollama_base_url: str | None = None  # e.g. http://localhost:11434/v1; unset disables Ollama
-    registry_path: str = Field(
-        default="config/registry.yaml",
+    registry_path: str | None = Field(  # None: the repo's config/, else the packaged copy
+        default=None,
         validation_alias=AliasChoices("TIERWISE_REGISTRY", "registry_path"),
     )
     db_url: str = Field(
         default="sqlite+aiosqlite:///tierwise.db",
         validation_alias=AliasChoices("TIERWISE_DB_URL", "db_url"),
     )
-    router_dir: str = Field(
-        default="models/router",
+    router_dir: str | None = Field(  # None: the repo's models/router, else the packaged copy
+        default=None,
         validation_alias=AliasChoices("TIERWISE_ROUTER_DIR", "router_dir"),
     )
     router_threads: int = 2
@@ -55,3 +59,27 @@ class Settings(BaseSettings):
     )
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))
+
+
+CACHE_ROUTER_DIR = Path.home() / ".cache" / "tierwise" / "router"  # where fetch-model writes
+
+
+def packaged_data() -> Traversable:
+    """The registry and router artifacts shipped inside the wheel."""
+    return files("tierwise") / "data"
+
+
+def _resolve(explicit: str | None, repo_default: str, packaged: str) -> Path:
+    if explicit is not None:
+        return Path(explicit)  # used verbatim: a missing explicit path is an error, not a fallback
+    if Path(repo_default).exists():
+        return Path(repo_default)
+    return Path(str(packaged_data() / packaged))
+
+
+def registry_file(settings: Settings) -> Path:
+    return _resolve(settings.registry_path, "config/registry.yaml", "registry.yaml")
+
+
+def router_directory(settings: Settings) -> Path:
+    return _resolve(settings.router_dir, "models/router", "router")

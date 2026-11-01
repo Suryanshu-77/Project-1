@@ -7,6 +7,7 @@ import pytest
 
 from tierwise.config import Settings
 from tierwise.router import RoutingDecision
+from tierwise.router import learned as learned_module
 from tierwise.router import router as router_module
 from tierwise.router.learned import load_learned
 from tierwise.router.router import required_caps, route
@@ -150,6 +151,20 @@ def test_load_learned_bad_dim_returns_none(
     np.savez(tmp_path / "classifier.npz", W0=np.zeros((10, 1)), b0=np.zeros(1))
     assert load_learned(_settings(tmp_path)) is None
     assert "384" in caplog.text
+
+
+def test_onnx_found_in_cache_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    real = Path(__file__).parents[2] / "models" / "router"
+    if not (real / "model.onnx").exists():
+        pytest.skip("run training.export_onnx first")
+    router, cache = tmp_path / "router", tmp_path / "cache"
+    router.mkdir()
+    cache.mkdir()
+    for name in ("router.json", "classifier.npz", "tokenizer.json"):
+        (router / name).write_bytes((real / name).read_bytes())
+    (cache / "model.onnx").write_bytes((real / "model.onnx").read_bytes())
+    monkeypatch.setattr(learned_module, "CACHE_ROUTER_DIR", cache)
+    assert load_learned(_settings(router)) is not None
 
 
 def test_load_learned_corrupt_config_returns_none(

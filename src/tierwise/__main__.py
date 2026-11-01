@@ -1,15 +1,18 @@
-"""Run the gateway (`tierwise`, `python -m tierwise`) or manage API keys (`tierwise keys`)."""
+"""Run the gateway (`tierwise`, `python -m tierwise`), manage API keys (`tierwise keys`) or
+download the learned router's encoder (`tierwise fetch-model`)."""
 
 import argparse
 import asyncio
 import sys
 import time
+from pathlib import Path
 
 import uvicorn
 
+from tierwise import fetch
 from tierwise.api.app import create_app
 from tierwise.budgets import month_of
-from tierwise.config import Settings
+from tierwise.config import CACHE_ROUTER_DIR, Settings
 from tierwise.keys import generate_key, hash_key
 from tierwise.store import RequestLog
 
@@ -42,6 +45,10 @@ def _parser() -> argparse.ArgumentParser:
     keys.add_parser("list", help="list keys (no secrets)")
     revoke = keys.add_parser("revoke", help="revoke a key by id")
     revoke.add_argument("id")
+    fetch_model = commands.add_parser(
+        "fetch-model", help="download the learned router's encoder (90 MB, sha256-checked)"
+    )
+    fetch_model.add_argument("--out", type=Path, default=CACHE_ROUTER_DIR)
     return parser
 
 
@@ -75,6 +82,14 @@ async def _keys(args: argparse.Namespace, db_url: str) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    if args.command == "fetch-model":
+        try:
+            path = fetch.fetch_model(args.out)
+        except fetch.FetchError as exc:
+            print(f"fetch-model failed: {exc}", file=sys.stderr)
+            return 1
+        print(f"wrote {path}")
+        return 0
     settings = Settings()
     if args.command == "keys":
         return asyncio.run(_keys(args, settings.db_url))

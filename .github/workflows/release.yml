@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - name: tag matches the package version
+        run: |
+          version=$(uv version --short)
+          test "$GITHUB_REF_NAME" = "v$version" || { echo "tag $GITHUB_REF_NAME != v$version"; exit 1; }
+      - run: uv sync
+      - run: uv run pytest -q  # a PyPI version can't be re-uploaded: never publish untested
+      - run: uv build
+      - name: wheel installs and serves without the repo
+        run: |
+          uv venv "$RUNNER_TEMP/wheel"
+          uv pip install --python "$RUNNER_TEMP/wheel" dist/*.whl
+          mkdir "$RUNNER_TEMP/empty" && cd "$RUNNER_TEMP/empty"
+          "$RUNNER_TEMP/wheel/bin/python" "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:  # PyPI Trusted Publishing: no token is stored anywhere
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1
