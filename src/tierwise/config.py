@@ -29,5 +29,8 @@ class Settings(BaseSettings):
     learned_router: bool = Field(
         default=True, validation_alias=AliasChoices("TIERWISE_LEARNED_ROUTER", "learned_router")
     )
+    retries: int = 2
+    retry_base_s: float = 0.25
+    retry_max_s: float = 2.0
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))

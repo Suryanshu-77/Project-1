@@ -23,6 +23,10 @@ class RetryableError(ProviderError):
     """Transient: worth retrying or failing over (rate limits, 5xx, timeouts)."""
 
 
+class ConnectionFailure(RetryableError):
+    """Couldn't reach the provider at all (refused, DNS, TLS): a provider-wide problem."""
+
+
 class FatalError(ProviderError):
     """The request itself is bad; retrying or failing over will not help."""
 
@@ -37,6 +41,12 @@ class Provider(Protocol):
     async def chat(self, req: ChatRequest, model_id: str) -> ChatResponse: ...
 
     def stream(self, req: ChatRequest, model_id: str) -> AsyncGenerator[StreamChunk, None]: ...
+
+
+def transport_error(provider: str, exc: httpx.HTTPError) -> RetryableError:
+    """Timeouts and dropped connections are retryable; failing to connect is provider-wide."""
+    kind = ConnectionFailure if isinstance(exc, httpx.ConnectError) else RetryableError
+    return kind(provider, None, type(exc).__name__)
 
 
 def classify_http_error(provider: str, status: int, body: str) -> ProviderError:
@@ -55,7 +65,7 @@ async def send(
     try:
         response = await client.request(method, url, **kw)
     except httpx.HTTPError as exc:  # timeouts, dropped connections, undecodable bodies
-        raise RetryableError(provider, None, type(exc).__name__) from exc
+        raise transport_error(provider, exc) from exc
     if not response.is_success:
         raise classify_http_error(provider, response.status_code, response.text)
     try:
@@ -113,4 +123,4 @@ async def stream_sse(
                     message = f"malformed stream event: {data}"[:MAX_ERROR_CHARS]
                     raise RetryableError(provider, response.status_code, message) from exc
     except httpx.HTTPError as exc:
-        raise RetryableError(provider, None, type(exc).__name__) from exc
+        raise transport_error(provider, exc) from exc

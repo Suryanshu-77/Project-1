@@ -149,3 +149,33 @@ async def test_decoding_error_is_retryable() -> None:
     respx.post(URL).mock(side_effect=httpx.DecodingError("bad gzip"))
     with pytest.raises(RetryableError):
         await _call()
+
+
+@respx.mock
+async def test_connect_error_is_connection_failure() -> None:
+    from tierwise.providers.base import ConnectionFailure
+
+    respx.post(URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(ConnectionFailure):
+        await _call()
+
+
+@respx.mock
+async def test_read_timeout_is_retryable_but_not_connection_failure() -> None:
+    from tierwise.providers.base import ConnectionFailure
+
+    respx.post(URL).mock(side_effect=httpx.ReadTimeout("slow"))
+    with pytest.raises(RetryableError) as info:
+        await _call()
+    assert not isinstance(info.value, ConnectionFailure)
+
+
+@respx.mock
+async def test_stream_connect_error_is_connection_failure() -> None:
+    from tierwise.providers.base import ConnectionFailure
+
+    respx.post(URL).mock(side_effect=httpx.ConnectError("refused"))
+    with pytest.raises(ConnectionFailure):
+        async with httpx.AsyncClient() as client:
+            async for _ in stream_sse(client, "up", "POST", URL, json={}):
+                pass
