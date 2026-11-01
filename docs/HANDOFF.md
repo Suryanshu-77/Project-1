@@ -1,6 +1,6 @@
 # tierwise: project handoff
 
-*State as of 2026-11-02, M8 on branch `feat/release`. Start a new chat by giving Claude this file. The authoritative
+*State as of 2026-11-02: M8 merged and released; M9 being planned on `feat/flywheel`. Start a new chat by giving Claude this file. The authoritative
 detail lives in the repo: the spec, the per-milestone plans, `BENCHMARK.md`, `README.md` and
 `git log`. This file is the map.*
 
@@ -39,8 +39,8 @@ expected to answer it well, across Anthropic, OpenAI, Gemini and local Ollama. I
 | M6 | Retry, failover, two-level breakers, stream hold, opt-in semantic cache | #8 | merged |
 | M7a | API keys + CLI, token-bucket rate limits, reserve/settle monthly budgets | #9 | merged |
 | M7b | Prometheus `/metrics`, OTel spans, Grafana dashboard, compose + Postgres | #10 | merged (all 5 CI checks green, incl. Postgres + `compose-smoke`) |
-| M8 | Packaged data, `tierwise fetch-model`, cancellation fix, release workflow, demo, docs | feat/release | built; PyPI publish waits on the user (see README → Releasing) |
-| M9 | Data flywheel: shadow sampling, offline judge, champion/challenger retrain | — | not started |
+| M8 | Packaged data, `tierwise fetch-model`, cancellation fix, release workflow, demo, docs | #11 | merged; **tierwise 0.8.0 is live on PyPI**, and the repo is public |
+| M9 | Data flywheel (spec §5.2): M9a collection, M9b learning | — | planned |
 
 `main` is at `e453895`: M0 through M7 are all merged. Version is now 0.8.0, and versions track milestones.
 
@@ -125,8 +125,7 @@ uv run python scripts/compose_smoke.py    # M7 exit check
 
 ## Open threads and backlog
 
-- **Next:** merge M8, then the user registers the PyPI pending publisher and pushes `v0.8.0`.
-  After that, **M9** (data flywheel).
+- **Next:** M9a, then M9b. Plans: `docs/superpowers/plans/2026-11-02-tierwise-m9a.md` and `-m9b.md`.
 - **Known weaknesses worth knowing (each documented):**
   - **Out of distribution (SPROUT):** the learned router loses to rules at 98–99% quality.
     It learned *Mixtral's* weak spots, which motivates M9.

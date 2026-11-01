@@ -1,7 +1,7 @@
 # tierwise — Design Spec
 
 *Cost-aware, self-hosted LLM gateway with a learned router.*
-Date: 2026-11-01 · Status: revision 5. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5). Rev 5 adds packaging, model fetch and release (§3.10, milestone M8).
+Date: 2026-11-01 · Status: revision 6. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5). Rev 5 adds packaging, model fetch and release (§3.10, milestone M8). Rev 6 moves the flywheel's contrast call and judge offline (§5.2, milestone M9).
 
 ## 1. Problem and goal
 Teams overpay by sending every request to a flagship model, or lose quality by defaulting to cheap ones. **tierwise** sits between applications and model providers and decides, per request, which model to use. It picks the **cheapest model expected to answer well enough**, and it measures whether that bet paid off.
@@ -228,6 +228,26 @@ A static `router_model` decays as traffic and the registry change, so tierwise k
 - **Retraining loop (champion/challenger):** `training/retrain.py` merges fresh shadow labels with the base dataset and trains a challenger. It evaluates the challenger against the current champion on a fixed held-out set plus recent shadow data. The challenger is promoted (a versioned artifact plus a registry `router_version`) only if it is at least as good on quality-at-cost **and** has zero critical misroutes.
 - **Registry drift:** adding a model triggers shadow sampling for that model at a raised rate, until it has enough labels to estimate its `quality` score.
 
+### 5.2 Flywheel as built (milestone M9, rev 6)
+Rev 6 moves the contrast call and the judge **offline**. The label is a property of the prompt, not of the moment it was sent, so nothing is lost. All label spend then sits in one job under one budget, and the gateway change is a single hook.
+- **M9a: collection.**
+  - **Gateway.** The sampler hooks in where complete text answers are cached (`keep()` in `routes.py`), so streams count and tool calls and cache hits never do.
+    - A request is sampled only if all of these hold: `TIERWISE_STORE_PAYLOADS=true`, the key has `allow_shadow` (`tierwise keys create --allow-shadow`), and the request was routed with a decision.
+    - The rate is `sample_rate(TIERWISE_SHADOW_RATE=0.02, confidence)`, raised for low-confidence routes.
+    - A sample is one `shadow_samples` row (`status=pending`), written by the queued writer. Samples are droppable telemetry, counted in `tierwise_shadow_samples_total`.
+  - **`tierwise flywheel label`, offline.** For each pending sample:
+    1. Call the **contrast model**: the registry's `baseline_model` if a cheaper model answered, otherwise the cheapest `basic`-tier model.
+    2. Ask the **judge** (`TIERWISE_JUDGE_MODEL`, default `baseline_model`) to score the cheaper answer from 1 to 5. It sees both answers in random order and replies in JSON.
+    3. Set `needs_strong = score < 4`, the same mapping as the M4 training labels.
+    - Spend stops at `TIERWISE_SHADOW_BUDGET_USD` (default 5) per calendar month (UTC).
+- **M9b: learning.**
+  - **Retrain.** `training/retrain.py` (dependency group `retrain`: scikit-learn, no torch) merges labeled shadow rows with the base split when it exists. Shadow rows are split by prompt hash, using the base data's `split_of`. It trains a challenger with the same `fit` logic as `training/train.py`.
+  - **Gate.** `evaluation/gate.py` scores the champion and the challenger on the same rows: the base test split if present, plus the shadow test split. It reports `cost_saved_at(0.95)` and critical misroutes, meaning how many of the 10 labeled hard prompts `tests/router/labeled_prompts.jsonl` sends to the cheap side of the threshold.
+    - The challenger is promoted only if `should_promote(champion, challenger)` holds. At minimum: zero critical misroutes, and cost saved no worse than the champion's.
+  - **Versions.** Every challenger is written to `models/router/versions/<UTC timestamp>/`. Promotion copies it over `router_dir`, and the replaced champion is kept in `versions/`. `router.json` carries `version`, which `/healthz` reports. This replaces the registry `router_version` of §5.1. The gateway loads a new router on restart.
+- **Deferred:** the registry-drift raised rate, hot reload of the router, and a payload purge command. Samples contain prompts, which is why collection needs three opt-ins.
+- **Exit check.** `scripts/flywheel_e2e.py` runs in CI against the fake upstream, whose fake judge scores hard-looking prompts 2 and easy ones 5. It sends traffic with a shadow key, then labels, retrains and gates. It passes when the gate prints a decision with its reasons, and `router_dir` changes if and only if the decision was to promote.
+
 ## 6. Security and privacy
 - Provider keys are read from env only and redacted in logs and traces.
 - Gateway keys are stored hashed and compared in constant time.
@@ -269,6 +289,8 @@ A static `router_model` decays as traffic and the registry change, so tierwise k
 - M3.5: expanding a model into its (model, effort) options: effective quality and thinking cost per level
 - M4: the confidence-escalation policy
 - M6: failover candidate ordering
+- M9a: the shadow sample rate as a function of router confidence
+- M9b: the champion/challenger promotion rule
 
 ## 10. Open items (resolved during build, not blocking)
 - Current prices and context windows for each model: verify against provider docs when writing `registry.yaml`.
