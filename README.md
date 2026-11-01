@@ -221,6 +221,43 @@ log records it with cost 0 and the full baseline cost, so it counts toward savin
   exactly. That covers emoji, rare symbols, words over 100 characters, and anything over 256
   tokens.
 
+## Run the full stack
+
+One command starts the gateway with Postgres, Prometheus, Grafana and Jaeger, plus a fake
+OpenAI-compatible model server, so it runs with no API keys and costs nothing:
+
+```bash
+docker compose -f deploy/docker-compose.yml up --build
+docker compose -f deploy/docker-compose.yml exec gateway tierwise keys create --name me
+```
+
+| | URL |
+|---|---|
+| Gateway (OpenAI-compatible) | http://localhost:8000/v1 |
+| Grafana dashboard | http://localhost:3000/d/tierwise |
+| Prometheus | http://localhost:9090 |
+| Jaeger traces | http://localhost:16686 |
+
+![tierwise Grafana dashboard after the smoke traffic](docs/benchmark/dashboard.jpg)
+
+**The dashboard** shows:
+- savings against an all-flagship baseline
+- spend, and requests by model
+- p95 latency and stream hold time
+- cache hit rate, failovers, open circuits, and errors by status
+
+**Behind it:**
+- **Prometheus** scrapes the gateway's `/metrics` endpoint. `/metrics` has no auth, by
+  Prometheus convention, so keep port 8000 off the public internet (or put a proxy in
+  front of it).
+- **Jaeger** receives one trace per request, with spans for routing, the cache, selection
+  and each provider attempt.
+
+**Real models:** to use them instead of the fake server, point `TIERWISE_REGISTRY` at
+`config/registry.yaml` and put provider keys in `.env`.
+
+`scripts/compose_smoke.py` checks the running stack end to end; CI runs it on every push.
+
 ## Providers
 
 | Provider | Enable with | Notes |
