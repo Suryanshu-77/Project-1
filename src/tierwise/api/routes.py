@@ -30,6 +30,7 @@ from tierwise.cache import (
     scope_key,
 )
 from tierwise.costs import cost_usd
+from tierwise.metrics import Metrics
 from tierwise.options import Option
 from tierwise.providers.base import Provider, ProviderError, RetryableError
 from tierwise.registry import ModelSpec, Registry
@@ -65,8 +66,11 @@ def resolve(
 class _Recorder:
     """Builds the one log record each request produces, whatever its outcome."""
 
-    def __init__(self, log: RequestLog, registry: Registry, model: str, stream: bool) -> None:
+    def __init__(
+        self, log: RequestLog, registry: Registry, model: str, stream: bool, metrics: Metrics
+    ) -> None:
         self.log = log
+        self.metrics = metrics
         self.registry = registry
         self.model = model
         self.stream = stream
@@ -91,33 +95,33 @@ class _Recorder:
 
     def done(self, usage: Usage | None, status: int, error_code: str | None) -> None:
         cost, baseline = self.costs(usage)
-        self.log.submit(
-            RequestRecord(
-                id=self.request_id,
-                ts=time.time(),
-                model=self.model,
-                provider=self.spec.provider if self.spec else "",
-                status=status,
-                stream=self.stream,
-                latency_ms=(time.perf_counter() - self.started) * 1000,
-                tokens_in=usage.input_tokens if usage else None,
-                tokens_cached=usage.cached_input_tokens if usage else None,
-                tokens_out=usage.output_tokens if usage else None,
-                cost_usd=cost,
-                baseline_cost_usd=baseline,
-                source=self.source,
-                mode=self.mode,
-                difficulty=self.difficulty,
-                confidence=self.confidence,
-                prefix_hash=self.prefix_hash,
-                effort=self.effort,
-                failover_count=self.failover_count,
-                cache_hit=self.cache_hit,
-                key_id=self.key_id,
-                tokens_reasoning=usage.reasoning_tokens if usage else None,
-                error_code=error_code,
-            )
+        record = RequestRecord(
+            id=self.request_id,
+            ts=time.time(),
+            model=self.model,
+            provider=self.spec.provider if self.spec else "",
+            status=status,
+            stream=self.stream,
+            latency_ms=(time.perf_counter() - self.started) * 1000,
+            tokens_in=usage.input_tokens if usage else None,
+            tokens_cached=usage.cached_input_tokens if usage else None,
+            tokens_out=usage.output_tokens if usage else None,
+            cost_usd=cost,
+            baseline_cost_usd=baseline,
+            source=self.source,
+            mode=self.mode,
+            difficulty=self.difficulty,
+            confidence=self.confidence,
+            prefix_hash=self.prefix_hash,
+            effort=self.effort,
+            failover_count=self.failover_count,
+            cache_hit=self.cache_hit,
+            key_id=self.key_id,
+            tokens_reasoning=usage.reasoning_tokens if usage else None,
+            error_code=error_code,
         )
+        self.log.submit(record)
+        self.metrics.observe(record)
 
 
 @dataclass(frozen=True)
@@ -223,7 +227,7 @@ def _estimate(plan: _Plan, req: ChatRequest) -> float:
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest, request: Request) -> Response:
     state = request.app.state
-    recorder = _Recorder(state.log, state.registry, req.model, req.stream)
+    recorder = _Recorder(state.log, state.registry, req.model, req.stream, state.metrics)
     affinity: AffinityTable = state.affinity
     breakers: Breakers = state.breakers
     budgets: Budgets = state.budgets
@@ -237,12 +241,11 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
         if not settled:
             settled = True
             budgets.settle(reservation, key, actual)
+
     policy: RetryPolicy = state.retry
     providers: dict[str, Provider] = state.providers
     try:
-        key = authenticate(
-            request.headers.get("authorization"), state.keys, state.require_api_key
-        )
+        key = authenticate(request.headers.get("authorization"), state.keys, state.require_api_key)
         recorder.key_id = key.id if key is not None else None
         if key is not None:
             state.limiter.check(key)
@@ -254,9 +257,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             raise GatewayError(400, "invalid_request_error", str(exc)) from exc
         cache: SemanticCache | None = state.cache
         cache_key: CacheKey | None = None
-        if cache is not None and cacheable(
-            result, request.headers, state.cache_max_temperature
-        ):
+        if cache is not None and cacheable(result, request.headers, state.cache_max_temperature):
             cache_key = await cache.key(scope_key(result), last_user_text(result))
             hit = cache.lookup(cache_key)
             hit_spec = state.registry.get(hit.model_id) if hit is not None else None
@@ -321,6 +322,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
                 spec = option.spec
             headers = served_by(spec, option, failovers)
             forward = _forward(result.request, option)[0]
+            state.metrics.observe_hold(primed.held_s)
 
             streamed_chunks: list[StreamChunk] = []
 
@@ -425,6 +427,13 @@ async def list_models(request: Request) -> dict[str, object]:
         if m.provider in providers
     ]
     return {"object": "list", "data": virtual + data}
+
+
+@router.get("/metrics")
+async def metrics_endpoint(request: Request) -> Response:
+    """Prometheus scrape target. Unauthenticated by convention: keep the port internal."""
+    body, content_type = request.app.state.metrics.render()
+    return Response(body, media_type=content_type)
 
 
 @router.get("/healthz")

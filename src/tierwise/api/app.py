@@ -17,6 +17,7 @@ from tierwise.budgets import Budgets, RateLimiter, month_of
 from tierwise.cache import SemanticCache
 from tierwise.config import Settings
 from tierwise.keys import KeyStore
+from tierwise.metrics import Metrics
 from tierwise.providers.anthropic import AnthropicProvider
 from tierwise.providers.base import Provider
 from tierwise.providers.gemini import GeminiProvider
@@ -96,6 +97,9 @@ def create_app(
         app.state.keys = keys
         app.state.require_api_key = config.require_api_key
         app.state.limiter = RateLimiter()
+        app.state.metrics = Metrics(
+            app.state.breakers, log, [m.id for m in app.state.registry.models]
+        )
         budgets = Budgets(log)
         month = month_of(time.time())
         budgets.load(month, await log.load_month_spend(month))
