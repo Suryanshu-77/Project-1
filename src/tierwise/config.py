@@ -49,5 +49,9 @@ class Settings(BaseSettings):
         validation_alias=AliasChoices("TIERWISE_REQUIRE_KEY", "require_api_key"),
     )
     keys_refresh_s: float = 30.0
+    otel_exporter_otlp_endpoint: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint"),
+    )
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))

@@ -10,6 +10,7 @@ from typing import cast
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse, Response
+from opentelemetry import trace
 
 from tierwise.affinity import AffinityTable, prefix_boundaries, split_prefix
 from tierwise.api.auth import authenticate
@@ -42,6 +43,7 @@ from tierwise.router.router import RoutingResult, route
 from tierwise.schema import ChatRequest, ChatResponse, FinishReason, StreamChunk, Usage
 from tierwise.selector import NoEligibleModel, select
 from tierwise.store import KeyRow, RequestLog, RequestRecord
+from tierwise.telemetry import provider_span, tracer
 from tierwise.tokens import estimate_text, estimate_tokens
 
 router = APIRouter()
@@ -216,6 +218,13 @@ def _cached_response(
     return JSONResponse(response.to_openai(), headers=headers)
 
 
+async def _call(
+    providers: dict[str, Provider], spec: ModelSpec, request: ChatRequest
+) -> ChatResponse:
+    with provider_span(spec.provider, spec.id):
+        return await providers[spec.provider].chat(request, spec.wire_id)
+
+
 def _estimate(plan: _Plan, req: ChatRequest) -> float:
     """The budget pre-check's estimate: the first candidate, priced like the selector does."""
     if plan.concrete is not None:
@@ -226,6 +235,18 @@ def _estimate(plan: _Plan, req: ChatRequest) -> float:
 
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest, request: Request) -> Response:
+    """One root span per request; its children are route, cache, select and provider."""
+    with tracer.start_as_current_span("tierwise.request") as span:
+        try:
+            response = await _chat_completions(req, request)
+        except GatewayError as exc:
+            span.set_attribute("http.status_code", exc.status)
+            raise
+        span.set_attribute("http.status_code", response.status_code)
+        return response
+
+
+async def _chat_completions(req: ChatRequest, request: Request) -> Response:
     state = request.app.state
     recorder = _Recorder(state.log, state.registry, req.model, req.stream, state.metrics)
     affinity: AffinityTable = state.affinity
@@ -250,7 +271,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
         if key is not None:
             state.limiter.check(key)
         try:
-            result = await route(req, state.learned)
+            with tracer.start_as_current_span("tierwise.route"):
+                result = await route(req, state.learned)
         except UnknownRoutingValue as exc:
             raise UnknownModel(req.model) from exc
         except EmptyAfterTag as exc:
@@ -258,8 +280,10 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
         cache: SemanticCache | None = state.cache
         cache_key: CacheKey | None = None
         if cache is not None and cacheable(result, request.headers, state.cache_max_temperature):
-            cache_key = await cache.key(scope_key(result), last_user_text(result))
-            hit = cache.lookup(cache_key)
+            with tracer.start_as_current_span("tierwise.cache") as cache_span:
+                cache_key = await cache.key(scope_key(result), last_user_text(result))
+                hit = cache.lookup(cache_key)
+                cache_span.set_attribute("tierwise.cache_hit", hit is not None)
             hit_spec = state.registry.get(hit.model_id) if hit is not None else None
             if hit is not None and hit_spec is not None:
                 settle(0.0)  # a cache hit is free, but it still counts as a request
@@ -270,7 +294,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             if cache is not None and cache_key is not None and content and finish == "stop":
                 cache.store(cache_key, CachedAnswer(content, spec.id, spec.provider, usage, finish))
 
-        plan = _choose(result, state, recorder)
+        with tracer.start_as_current_span("tierwise.select"):
+            plan = _choose(result, state, recorder)
         recorder.source = plan.reason
         if key is not None:
             reservation = budgets.reserve(key, _estimate(plan, result.request))
@@ -280,6 +305,15 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             recorder.spec, recorder.model, recorder.failover_count = spec, spec.id, failovers
             # log the level that actually ran (the model's default when nothing was sent)
             recorder.effort = sent_effort if option is None else option.effort
+            trace.get_current_span().set_attributes(
+                {
+                    "tierwise.model": spec.id,
+                    "tierwise.provider": spec.provider,
+                    "tierwise.reason": plan.reason,
+                    "tierwise.effort": recorder.effort or "default",
+                    "tierwise.failovers": failovers,
+                }
+            )
             return {
                 "X-Tierwise-Model": spec.id,
                 "X-Tierwise-Provider": spec.provider,
@@ -298,8 +332,9 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 
             async def open_stream(candidate: Option | None, target: ModelSpec) -> Primed:
                 outgoing = _forward(result.request, candidate)[0]
-                chunks = providers[target.provider].stream(outgoing, target.wire_id)
-                return await prime_stream(chunks, hold_s, hold_bytes)
+                with provider_span(target.provider, target.id):
+                    chunks = providers[target.provider].stream(outgoing, target.wire_id)
+                    return await prime_stream(chunks, hold_s, hold_bytes)
 
             if plan.concrete is not None:
                 spec, option, failovers = plan.concrete, None, 0
@@ -371,9 +406,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             forward = _forward(result.request, None)[0]
             served_by(spec, None, 0)  # so an error is logged against this model
             try:
-                response = await with_retries(
-                    partial(providers[spec.provider].chat, forward, spec.wire_id), policy
-                )
+                response = await with_retries(partial(_call, providers, spec, forward), policy)
             except ProviderError as exc:
                 breakers.record(spec.provider, spec.id, exc)
                 raise
@@ -382,8 +415,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 
             async def attempt(candidate: Option) -> ChatResponse:
                 outgoing = _forward(result.request, candidate)[0]
-                provider = providers[candidate.spec.provider]
-                return await provider.chat(outgoing, candidate.spec.wire_id)
+                return await _call(providers, candidate.spec, outgoing)
 
             served = await serve(
                 plan.candidates, attempt, breakers, policy, clear_count=plan.clear_count

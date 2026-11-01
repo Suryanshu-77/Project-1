@@ -28,6 +28,7 @@ from tierwise.reliability.breaker import Breakers
 from tierwise.reliability.retry import RetryPolicy
 from tierwise.router.learned import load_learned
 from tierwise.store import RequestLog
+from tierwise.telemetry import configure_tracing
 
 LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=30)
 TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=2.0)
@@ -42,6 +43,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        tracing = configure_tracing(config.otel_exporter_otlp_endpoint)
         # Fail fast: an invalid registry stops startup instead of breaking requests later.
         app.state.registry = registry or load_registry(config.registry_path)
 
@@ -108,6 +110,8 @@ def create_app(
         try:
             yield
         finally:
+            if tracing is not None:
+                tracing.shutdown()  # flush spans still batched
             refresh.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await refresh
