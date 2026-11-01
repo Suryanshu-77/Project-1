@@ -93,3 +93,56 @@ async def test_fetch_after_stop_leaves_no_pooled_connections(tmp_path: Path) -> 
     await log.fetch_all()
     assert log._engine is not None
     assert log._engine.pool.checkedin() == 0
+
+
+M3_COLUMNS = (
+    "id TEXT PRIMARY KEY, ts FLOAT NOT NULL, model TEXT NOT NULL, provider TEXT NOT NULL, "
+    "status INTEGER NOT NULL, stream BOOLEAN NOT NULL, latency_ms FLOAT NOT NULL, "
+    "tokens_in INTEGER, tokens_cached INTEGER, tokens_out INTEGER, cost_usd FLOAT, "
+    "baseline_cost_usd FLOAT, source TEXT NOT NULL, mode TEXT, key_id TEXT, difficulty FLOAT, "
+    "confidence FLOAT, prefix_hash TEXT, cache_hit BOOLEAN NOT NULL, "
+    "failover_count INTEGER NOT NULL, error_code TEXT"
+)
+
+
+def _m3_database(path: Path) -> None:
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"CREATE TABLE requests ({M3_COLUMNS})")
+        conn.execute(
+            "INSERT INTO requests (id, ts, model, provider, status, stream, latency_ms, source, "
+            "cache_hit, failover_count) VALUES ('old', 1.0, 'm', 'openai', 200, 0, 5.0, "
+            "'rules', 0, 0)"
+        )
+
+
+async def test_upgrades_m3_database_in_place(tmp_path: Path) -> None:
+    _m3_database(tmp_path / "t.db")
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit(_record(5, effort="low", tokens_reasoning=12))
+    await log.stop()
+    rows = {r.id: r for r in await log.fetch_all()}
+    assert set(rows) == {"old", "r5"}
+    assert rows["old"].effort is None and rows["old"].tokens_reasoning is None
+    assert (rows["r5"].effort, rows["r5"].tokens_reasoning) == ("low", 12)
+
+
+async def test_upgrade_is_idempotent(tmp_path: Path) -> None:
+    _m3_database(tmp_path / "t.db")
+    first = RequestLog(_url(tmp_path))
+    await first.start()
+    await first.stop()
+    second = RequestLog(_url(tmp_path))
+    await second.start()
+    assert second.added_columns == []
+    await second.stop()
+    assert first.added_columns == ["effort", "tokens_reasoning"]
+
+
+async def test_new_fields_round_trip(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit(_record(1, effort="high", tokens_reasoning=3))
+    await log.stop()
+    [row] = await log.fetch_all()
+    assert (row.effort, row.tokens_reasoning) == ("high", 3)
