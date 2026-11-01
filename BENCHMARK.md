@@ -54,10 +54,10 @@ All-Mixtral already reaches 85.6% of GPT-4's quality at 2.7% of its cost.
 | learned | 93.2% | 51.7% | 40.9% | 0.914 |
 | hybrid (deployed) | 93.2% | 52.0% | 48.8% | 0.915 |
 
-**gpt-4o-mini alone reaches 95.2% of gpt-4o's quality** at 6.8% of its cost, so every router "saves" 93.2% at the 95% target just by sending everything cheap. The stricter targets are where the routers differ:
+**gpt-4o-mini alone reaches 95.2% of gpt-4o's quality** (mean judged score 0.807 vs 0.848) at 6.8% of its cost, so every router "saves" 93.2% at the 95% target just by sending everything cheap. The stricter targets are where the routers differ:
 - **All routers beat random.**
 - **Rules beat the learned classifier out of distribution.** The classifier learned which prompts *Mixtral* struggles with, in 2024-era data; gpt-4o-mini fails on different prompts.
-- **The hybrid recovers most of the gap,** because rules can raise its difficulty.
+- **The hybrid's recovery depends on the target.** Because rules can raise its difficulty, at 99% it recovers most of the gap between learned and rules (48.8% vs 40.9% and 53.4%). At 98% it recovers almost none of it (52.0% vs 51.7% and 58.5%).
 
 ## The deployed hybrid
 
@@ -82,4 +82,6 @@ uv run python -m evaluation.run_eval --dataset heldout   # docs/benchmark/heldou
 uv run python -m evaluation.run_eval --dataset sprout    # downloads ~580 MB into the HF cache
 ```
 
-CI runs the critical-set gate (`tests/evaluation/test_critical_gate.py`): the 10 labeled hard prompts must never route to a basic-tier model.
+The critical-set gate (`tests/evaluation/test_critical_gate.py`) checks that the 10 labeled hard prompts never route to a basic-tier model. Coverage differs by environment:
+- **CI** runs the rules path only, because the 90 MB ONNX encoder isn't there. The max(rules, learned) logic is covered separately by unit tests with fake routers.
+- **The learned path**, with the trained classifier, runs wherever the model files exist. Run it after every retrain.
