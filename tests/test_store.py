@@ -381,3 +381,18 @@ async def test_existing_db_gains_allow_shadow_column(tmp_path: Path) -> None:
     await upgraded.stop()
     assert keys["old"].allow_shadow is False and keys["new"].allow_shadow is True
     assert new.allow_shadow
+
+
+async def test_failed_sample_write_logs_no_payload_and_counts(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit_sample(_sample(0, request_json="SECRET-PROMPT", routed_answer="SECRET-ANSWER"))
+    await log.stop()
+    await log.start()
+    log.submit_sample(_sample(0, request_json="SECRET-PROMPT", routed_answer="SECRET-ANSWER"))
+    await log.stop()  # same id again: the insert fails
+    assert "failed to write 1 shadow samples" in caplog.text
+    assert "SECRET" not in caplog.text  # prompts and answers never reach the logs
+    assert log.dropped == 1  # visible as tierwise_telemetry_dropped_total

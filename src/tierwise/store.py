@@ -460,8 +460,10 @@ class RequestLog:
         try:
             async with self._require_engine().begin() as conn:
                 await conn.execute(insert(shadow_samples_table), [asdict(s) for s in batch])
-        except Exception:
-            logger.exception("failed to write %d shadow samples", len(batch))
+        except Exception as exc:
+            # no traceback: driver errors quote the bound parameters, i.e. prompts and answers
+            logger.error("failed to write %d shadow samples: %s", len(batch), type(exc).__name__)
+            self.dropped += len(batch)
 
     async def _write(self, batch: list[RequestRecord]) -> None:
         assert self._engine is not None

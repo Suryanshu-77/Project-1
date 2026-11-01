@@ -12,12 +12,14 @@ import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from functools import partial
 
 from tierwise.budgets import month_of
 from tierwise.costs import cost_usd
 from tierwise.providers.base import Provider, ProviderError
 from tierwise.registry import ModelSpec, Registry
-from tierwise.schema import ChatRequest, Message
+from tierwise.reliability.retry import RetryPolicy, with_retries
+from tierwise.schema import ChatRequest, ChatResponse, Message
 from tierwise.store import RequestLog, ShadowSample
 from tierwise.tokens import text_of
 
@@ -75,9 +77,12 @@ def parse_score(text: str) -> int:
     return score
 
 
-async def _ask(provider: Provider, spec: ModelSpec, request: ChatRequest) -> tuple[str, float]:
-    response = await provider.chat(request, spec.wire_id)
-    return response.content or "", cost_usd(response.usage, spec)
+async def _ask(
+    provider: Provider, spec: ModelSpec, request: ChatRequest, policy: RetryPolicy
+) -> tuple[ChatResponse, float]:
+    """One paid call, retried on transient errors (429, 5xx, timeouts) like the gateway does."""
+    response = await with_retries(partial(provider.chat, request, spec.wire_id), policy)
+    return response, cost_usd(response.usage, spec)
 
 
 async def _label(
@@ -86,6 +91,7 @@ async def _label(
     providers: dict[str, Provider],
     judge: ModelSpec,
     now: float,
+    policy: RetryPolicy,
 ) -> ShadowSample:
     """One sample, labeled or failed; its cost counts either way."""
     spent = 0.0
@@ -97,8 +103,13 @@ async def _label(
         if contrast is None:
             raise ValueError(f"no configured contrast model for {routed.id!r}")
         request = ChatRequest.model_validate_json(sample.request_json)
-        contrast_answer, cost = await _ask(providers[contrast.provider], contrast, request)
+        reply, cost = await _ask(providers[contrast.provider], contrast, request, policy)
         spent += cost
+        contrast_answer = reply.content or ""
+        if reply.tool_calls or not contrast_answer or reply.finish_reason != "stop":
+            # an empty, cut-off or tool-call answer can't be compared: judging it would
+            # store a confident, wrong label
+            raise ValueError(f"contrast answer unusable (finish_reason={reply.finish_reason})")
         cheap_is_routed = contrast.tier == "flagship" or contrast.id == registry.baseline_model
         cheap, strong = (
             (sample.routed_answer, contrast_answer)
@@ -110,9 +121,9 @@ async def _label(
             messages=judge_messages(_transcript(request), cheap, strong, seed=sample.id),
             temperature=0,
         )
-        verdict, cost = await _ask(providers[judge.provider], judge, grading)
+        verdict, cost = await _ask(providers[judge.provider], judge, grading, policy)
         spent += cost
-        score = parse_score(verdict)
+        score = parse_score(verdict.content or "")
     except (ProviderError, ValueError) as exc:
         return replace(sample, status="failed", error=str(exc)[:500], label_cost_usd=spent,
                        labeled_ts=now)  # fmt: skip
@@ -136,6 +147,7 @@ async def label_pending(
     budget_usd: float,
     limit: int,
     clock: Callable[[], float] = time.time,
+    policy: RetryPolicy = RetryPolicy(),  # noqa: B008 (frozen dataclass)
 ) -> LabelRun:
     """Label pending samples, oldest first, until `limit`, or until this month's label spend
     (earlier runs included) reaches `budget_usd`."""
@@ -148,7 +160,7 @@ async def label_pending(
     for done, sample in enumerate(samples):
         if month_spend + run_spent >= budget_usd:
             return LabelRun(labeled, failed, len(samples) - done, run_spent, True)
-        result = await _label(sample, registry, providers, judge, clock())
+        result = await _label(sample, registry, providers, judge, clock(), policy)
         await log.save_label(result)
         run_spent += result.label_cost_usd
         if result.status == "labeled":

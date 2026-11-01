@@ -13,6 +13,7 @@ from tierwise.flywheel import JUDGE_MARKER, contrast_for, label_pending, parse_s
 from tierwise.providers.base import Provider
 from tierwise.providers.openai import OpenAIProvider
 from tierwise.registry import ModelSpec, Registry
+from tierwise.reliability.retry import RetryPolicy
 from tierwise.store import RequestLog, ShadowSample
 
 NOV = 1793577600.0  # 2026-11-03 UTC
@@ -182,3 +183,41 @@ def test_cli_flywheel_label_prints_summary_only(
     out = capsys.readouterr().out
     assert re.search(r"labeled 3, failed 1, left 2", out) and "$0.25" in out
     assert "budget" in out
+
+
+@pytest.mark.parametrize(("content", "finish"), [("", "stop"), ("half an answ", "length")])
+async def test_unusable_contrast_answer_fails_instead_of_labeling(
+    log: RequestLog, content: str, finish: str
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if JUDGE_MARKER in str(body["messages"][0]["content"]):
+            return _upstream()(request)
+        return httpx.Response(200, json={
+            "id": "x", "model": body["model"], "created": 1,
+            "choices": [{"index": 0, "finish_reason": finish,
+                         "message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 10},
+        })  # fmt: skip
+
+    await _seed(log, _sample(0))
+    run = await label_pending(log, REGISTRY, _providers(handler), _judge(), 100.0, 10)
+    assert (run.labeled, run.failed) == (0, 1)  # a wrong label would poison retraining
+    assert await log.labeled_samples() == []
+
+
+async def test_transient_judge_error_is_retried(log: RequestLog) -> None:
+    judged: list[int] = []
+    ok = _upstream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if JUDGE_MARKER in str(json.loads(request.content)["messages"][0]["content"]):
+            judged.append(1)
+            if len(judged) == 1:
+                return httpx.Response(429, json={"error": {"message": "slow down"}})
+        return ok(request)
+
+    await _seed(log, _sample(0))
+    run = await label_pending(log, REGISTRY, _providers(handler), _judge(), 100.0, 10,
+                              policy=RetryPolicy(retries=2, base_s=0.0, max_s=0.0))  # fmt: skip
+    assert (run.labeled, run.failed, len(judged)) == (1, 0, 2)
