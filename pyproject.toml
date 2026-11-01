@@ -16,6 +16,11 @@ dependencies = [
     "onnxruntime>=1.20",
     "tokenizers>=0.20",
     "numpy>=2",
+    "prometheus-client>=0.21",
+    "opentelemetry-api>=1.28",
+    "opentelemetry-sdk>=1.28",
+    "opentelemetry-exporter-otlp-proto-http>=1.28",
+    "asyncpg>=0.30",
 ]
 
 [project.scripts]

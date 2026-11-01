@@ -107,6 +107,10 @@ class Breakers:
             self._providers[name] = self._new()
         return self._providers[name]
 
+    def open_models(self) -> list[tuple[str, str]]:
+        """(provider, model) for every model breaker that is open right now."""
+        return [key for key, breaker in self._models.items() if breaker.state == "open"]
+
     def _open_models(self, provider: str) -> int:
         return sum(
             1 for (p, _), b in self._models.items() if p == provider and b.state == "open"

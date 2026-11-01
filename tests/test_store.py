@@ -1,10 +1,13 @@
 import asyncio
+import os
 import sqlite3
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 import pytest
+from sqlalchemy.ext.asyncio import create_async_engine
 
-from tierwise.store import RequestLog, RequestRecord
+from tierwise.store import RequestLog, RequestRecord, metadata
 
 
 def _record(i: int = 0, **overrides: object) -> RequestRecord:
@@ -28,6 +31,24 @@ def _record(i: int = 0, **overrides: object) -> RequestRecord:
 
 def _url(tmp_path: Path) -> str:
     return f"sqlite+aiosqlite:///{(tmp_path / 't.db').as_posix()}"
+
+
+PG_URL = os.environ.get("TIERWISE_TEST_PG_URL")
+
+
+@pytest.fixture(params=["sqlite", "postgres"])
+async def db_url(request: pytest.FixtureRequest, tmp_path: Path) -> AsyncIterator[str]:
+    """The same test on SQLite and, when TIERWISE_TEST_PG_URL is set (CI), on Postgres."""
+    if request.param == "sqlite":
+        yield _url(tmp_path)
+        return
+    if not PG_URL:
+        pytest.skip("set TIERWISE_TEST_PG_URL to run against Postgres")
+    engine = create_async_engine(PG_URL)
+    async with engine.begin() as conn:
+        await conn.run_sync(metadata.drop_all)  # each test starts from empty tables
+    await engine.dispose()
+    yield PG_URL
 
 
 async def test_round_trip(tmp_path: Path) -> None:
@@ -153,8 +174,8 @@ async def test_new_fields_round_trip(tmp_path: Path) -> None:
 # --- M7a: keys and never-dropped debits --------------------------------------------------
 
 
-async def test_create_list_revoke_key(tmp_path: Path) -> None:
-    log = RequestLog(_url(tmp_path))
+async def test_create_list_revoke_key(db_url: str) -> None:
+    log = RequestLog(db_url)
     await log.start()
     row = await log.create_key("team-a", "h" * 64, "tw-abcdefg", 50.0, 60)
     [listed] = await log.list_keys()
@@ -167,11 +188,11 @@ async def test_create_list_revoke_key(tmp_path: Path) -> None:
     await log.stop()
 
 
-async def test_duplicate_key_hash_rejected(tmp_path: Path) -> None:
+async def test_duplicate_key_hash_rejected(db_url: str) -> None:
     import pytest
     from sqlalchemy.exc import IntegrityError
 
-    log = RequestLog(_url(tmp_path))
+    log = RequestLog(db_url)
     await log.start()
     await log.create_key("a", "same", "tw-1", None, None)
     with pytest.raises(IntegrityError):
@@ -179,8 +200,8 @@ async def test_duplicate_key_hash_rejected(tmp_path: Path) -> None:
     await log.stop()
 
 
-async def test_debits_aggregate_per_key_and_month(tmp_path: Path) -> None:
-    log = RequestLog(_url(tmp_path))
+async def test_debits_aggregate_per_key_and_month(db_url: str) -> None:
+    log = RequestLog(db_url)
     await log.start()
     log.submit_debit("a", "2026-11", 0.01)
     log.submit_debit("a", "2026-11", 0.02)
@@ -193,8 +214,8 @@ async def test_debits_aggregate_per_key_and_month(tmp_path: Path) -> None:
     ]
 
 
-async def test_debits_accumulate_across_flushes(tmp_path: Path) -> None:
-    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+async def test_debits_accumulate_across_flushes(db_url: str) -> None:
+    log = RequestLog(db_url, flush_interval=0.01)
     await log.start()
     log.submit_debit("a", "2026-11", 0.01)
     await asyncio.sleep(0.1)
@@ -205,8 +226,8 @@ async def test_debits_accumulate_across_flushes(tmp_path: Path) -> None:
     assert (round(spent, 9), count) == (0.03, 2)
 
 
-async def test_debits_survive_failed_flush(tmp_path: Path) -> None:
-    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+async def test_debits_survive_failed_flush(db_url: str) -> None:
+    log = RequestLog(db_url, flush_interval=0.01)
     await log.start()
     real = log._upsert_debits
     calls = {"n": 0}
@@ -226,8 +247,8 @@ async def test_debits_survive_failed_flush(tmp_path: Path) -> None:
     assert calls["n"] >= 2
 
 
-async def test_debits_never_dropped_when_telemetry_queue_full(tmp_path: Path) -> None:
-    log = RequestLog(_url(tmp_path), max_queue=1)
+async def test_debits_never_dropped_when_telemetry_queue_full(db_url: str) -> None:
+    log = RequestLog(db_url, max_queue=1)
     log.submit(_record(1))  # not started: the queue stays full
     log.submit(_record(2))
     log.submit_debit("a", "2026-11", 0.5)
@@ -238,8 +259,8 @@ async def test_debits_never_dropped_when_telemetry_queue_full(tmp_path: Path) ->
     assert spent == 0.5
 
 
-async def test_load_month_spend(tmp_path: Path) -> None:
-    log = RequestLog(_url(tmp_path))
+async def test_load_month_spend(db_url: str) -> None:
+    log = RequestLog(db_url)
     await log.start()
     log.submit_debit("a", "2026-11", 0.25)
     log.submit_debit("b", "2026-10", 9.0)
@@ -250,13 +271,13 @@ async def test_load_month_spend(tmp_path: Path) -> None:
 
 
 async def test_stop_gives_up_on_unwritable_debits_and_logs_them(
-    tmp_path: Path, caplog: "pytest.LogCaptureFixture"
+    db_url: str, caplog: "pytest.LogCaptureFixture"
 ) -> None:
     import logging
     import time
 
     caplog.set_level(logging.ERROR)
-    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+    log = RequestLog(db_url, flush_interval=0.01)
     await log.start()
 
     async def down(conn: object, rows: object) -> None:
@@ -268,3 +289,16 @@ async def test_stop_gives_up_on_unwritable_debits_and_logs_them(
     await asyncio.wait_for(log.stop(), timeout=5)
     assert time.monotonic() - started < 3
     assert "key9" in caplog.text and "2026-11" in caplog.text and "0.42" in caplog.text
+
+
+async def test_concurrent_flushes_sum_not_overwrite(db_url: str) -> None:
+    first, second = RequestLog(db_url), RequestLog(db_url)
+    await first.start()
+    await second.start()
+    first.submit_debit("k", "2026-11", 0.10)
+    second.submit_debit("k", "2026-11", 0.10)
+    await asyncio.gather(first.stop(), second.stop())
+    await first.start()
+    [(_, _, spent, count)] = await first.fetch_usage()
+    await first.stop()
+    assert (round(spent, 9), count) == (0.2, 2)

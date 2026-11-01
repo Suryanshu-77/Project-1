@@ -1,0 +1,13 @@
+.git
+.venv
+.superpowers
+.mypy_cache
+.ruff_cache
+.pytest_cache
+**/__pycache__
+*.db
+.env
+training/data
+models/router/model.onnx
+docs
+tests

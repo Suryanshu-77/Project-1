@@ -7,6 +7,20 @@ on:
 jobs:
   check:
     runs-on: ubuntu-latest
+    services:
+      postgres:  # the store tests also run against Postgres (TIERWISE_TEST_PG_URL)
+        image: postgres:16
+        env:
+          POSTGRES_USER: tierwise
+          POSTGRES_PASSWORD: tierwise
+          POSTGRES_DB: tierwise
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U tierwise -d tierwise"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -16,3 +30,17 @@ jobs:
       - run: uv run ruff check .
       - run: uv run mypy src
       - run: uv run pytest -q
+        env:
+          TIERWISE_TEST_PG_URL: postgresql+asyncpg://tierwise:tierwise@localhost:5432/tierwise
+
+  compose-smoke:  # the M7 exit check: the whole stack up, traffic through it, dashboard live
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: docker compose -f deploy/docker-compose.yml up -d --build
+      - run: uv run python scripts/compose_smoke.py
+      - if: always()
+        run: docker compose -f deploy/docker-compose.yml down -v

@@ -39,6 +39,7 @@ class Primed:
     chunks: AsyncGenerator[StreamChunk, None]
     buffered: list[StreamChunk]
     pending: "asyncio.Future[StreamChunk] | None" = None  # a read still in flight at commit
+    held_s: float = 0.0  # how long the client waited while the preamble was held
 
     async def close(self) -> None:
         """Close upstream; a read still in flight must be cancelled first (an async generator
@@ -65,7 +66,8 @@ async def prime_stream(
     generator: cancelling a pending ``anext`` would close a healthy but slow stream.
     """
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + hold_s
+    started = loop.time()
+    deadline = started + hold_s
     primed = Primed(chunks, [])
     size = 0
     try:
@@ -74,15 +76,18 @@ async def prime_stream(
             primed.pending = read
             done, _ = await asyncio.wait({read}, timeout=max(deadline - loop.time(), 0.0))
             if not done:
+                primed.held_s = loop.time() - started
                 return primed  # the hold timed out: commit with the read still in flight
             primed.pending = None
             try:
                 chunk = read.result()
             except StopAsyncIteration:
+                primed.held_s = loop.time() - started
                 return primed
             primed.buffered.append(chunk)
             size += len(chunk.model_dump_json())
             if _has_content(chunk) or size >= hold_bytes:
+                primed.held_s = loop.time() - started
                 return primed
     except BaseException:
         await primed.close()

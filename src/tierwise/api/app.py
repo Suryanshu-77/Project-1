@@ -17,6 +17,7 @@ from tierwise.budgets import Budgets, RateLimiter, month_of
 from tierwise.cache import SemanticCache
 from tierwise.config import Settings
 from tierwise.keys import KeyStore
+from tierwise.metrics import Metrics
 from tierwise.providers.anthropic import AnthropicProvider
 from tierwise.providers.base import Provider
 from tierwise.providers.gemini import GeminiProvider
@@ -27,6 +28,7 @@ from tierwise.reliability.breaker import Breakers
 from tierwise.reliability.retry import RetryPolicy
 from tierwise.router.learned import load_learned
 from tierwise.store import RequestLog
+from tierwise.telemetry import configure_tracing
 
 LIMITS = httpx.Limits(max_keepalive_connections=100, max_connections=250, keepalive_expiry=30)
 TIMEOUT = httpx.Timeout(connect=5.0, read=120.0, write=30.0, pool=2.0)
@@ -41,6 +43,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        tracing = configure_tracing(config.otel_exporter_otlp_endpoint)
         # Fail fast: an invalid registry stops startup instead of breaking requests later.
         app.state.registry = registry or load_registry(config.registry_path)
 
@@ -96,6 +99,9 @@ def create_app(
         app.state.keys = keys
         app.state.require_api_key = config.require_api_key
         app.state.limiter = RateLimiter()
+        app.state.metrics = Metrics(
+            app.state.breakers, log, [m.id for m in app.state.registry.models]
+        )
         budgets = Budgets(log)
         month = month_of(time.time())
         budgets.load(month, await log.load_month_spend(month))
@@ -112,6 +118,8 @@ def create_app(
             await log.stop()
             if learned is not None:
                 learned.close()
+            if tracing is not None:  # last: a slow collector must not delay the debit flush
+                tracing.shutdown()
 
     app = FastAPI(title="tierwise", version=__version__, lifespan=lifespan)
     install_error_handlers(app)
