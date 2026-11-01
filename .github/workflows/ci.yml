@@ -32,6 +32,14 @@ jobs:
       - run: uv run pytest -q
         env:
           TIERWISE_TEST_PG_URL: postgresql+asyncpg://tierwise:tierwise@localhost:5432/tierwise
+      - name: wheel installs and serves without the repo  # the M8 exit check
+        run: |
+          uv build
+          uv venv "$RUNNER_TEMP/wheel"
+          uv pip install --python "$RUNNER_TEMP/wheel" dist/*.whl
+          mkdir "$RUNNER_TEMP/empty" && cd "$RUNNER_TEMP/empty"
+          "$RUNNER_TEMP/wheel/bin/tierwise" --help
+          "$RUNNER_TEMP/wheel/bin/python" "$GITHUB_WORKSPACE/scripts/wheel_smoke.py"
 
   compose-smoke:  # the M7 exit check: the whole stack up, traffic through it, dashboard live
     runs-on: ubuntu-latest

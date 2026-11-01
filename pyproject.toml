@@ -1,9 +1,21 @@
 [project]
 name = "tierwise"
-version = "0.1.0"
+version = "0.8.0"
 description = "Cost-aware, self-hosted LLM gateway with a learned router"
 readme = "README.md"
 requires-python = ">=3.12"
+license = "Apache-2.0"
+license-files = ["LICENSE", "models/router/NOTICE"]
+authors = [{ name = "Suryanshu" }]
+keywords = ["llm", "gateway", "router", "openai", "anthropic", "gemini", "ollama"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Framework :: FastAPI",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "fastapi>=0.115",
     "uvicorn[standard]>=0.30",
@@ -22,6 +34,11 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=1.28",
     "asyncpg>=0.30",
 ]
+
+[project.urls]
+Repository = "https://github.com/Suryanshu-77/Project-1"
+Benchmark = "https://github.com/Suryanshu-77/Project-1/blob/main/BENCHMARK.md"
+Changelog = "https://github.com/Suryanshu-77/Project-1/blob/main/CHANGELOG.md"
 
 [project.scripts]
 tierwise = "tierwise.__main__:main"
