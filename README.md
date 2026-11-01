@@ -150,8 +150,14 @@ client = OpenAI(base_url="http://localhost:8000/v1", api_key="tw-...")
   `Retry-After` header.
 - **Budget:** per UTC calendar month.
   - **Before calling a model,** the request reserves its estimated cost. A reservation that
-    would exceed the budget gets 429 `budget_exceeded`, so concurrent requests can't jointly
-    overshoot it.
+    would exceed the budget gets 429 `budget_exceeded`. That stops a burst of concurrent
+    requests from all passing a check before any of them is charged.
+  - **Reservations are estimates.** Without `max_tokens`, the output is estimated at 512
+    tokens, so a key can end the month over its budget by the real cost of the requests
+    already in flight. Set `max_tokens` to make the cap tight.
+  - **Enforcement:** budgets and rate limits are enforced only with
+    `TIERWISE_REQUIRE_KEY=true`. Otherwise a client can drop its key and be served
+    anonymously.
   - **After the call,** the actual cost is charged and the reservation is released. Failed
     requests cost nothing, and cache hits cost $0.
   - **Persistence:** spend lives in memory and is written to the `usage_monthly` table

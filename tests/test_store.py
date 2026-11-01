@@ -2,6 +2,8 @@ import asyncio
 import sqlite3
 from pathlib import Path
 
+import pytest
+
 from tierwise.store import RequestLog, RequestRecord
 
 
@@ -245,3 +247,24 @@ async def test_load_month_spend(tmp_path: Path) -> None:
     await log.start()
     assert await log.load_month_spend("2026-11") == {"a": 0.25}
     await log.stop()
+
+
+async def test_stop_gives_up_on_unwritable_debits_and_logs_them(
+    tmp_path: Path, caplog: "pytest.LogCaptureFixture"
+) -> None:
+    import logging
+    import time
+
+    caplog.set_level(logging.ERROR)
+    log = RequestLog(_url(tmp_path), flush_interval=0.01)
+    await log.start()
+
+    async def down(conn: object, rows: object) -> None:
+        raise RuntimeError("disk full")
+
+    log._upsert_debits = down  # type: ignore[method-assign]
+    log.submit_debit("key9", "2026-11", 0.42)
+    started = time.monotonic()
+    await asyncio.wait_for(log.stop(), timeout=5)
+    assert time.monotonic() - started < 3
+    assert "key9" in caplog.text and "2026-11" in caplog.text and "0.42" in caplog.text

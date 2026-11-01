@@ -36,6 +36,8 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_en
 
 logger = logging.getLogger(__name__)
 
+SHUTDOWN_FLUSH_ATTEMPTS = 3  # then unwritten debits are logged for a manual replay
+
 
 @dataclass(frozen=True)
 class RequestRecord:
@@ -172,6 +174,7 @@ class RequestLog:
         self._closing = False
         self.dropped = 0
         self._debits: dict[tuple[str, str], tuple[float, int]] = {}
+        self._shutdown_failures = 0
         self.added_columns: list[str] = []  # columns the last start() had to add
 
     async def start(self) -> None:
@@ -289,6 +292,10 @@ class RequestLog:
         except Exception:
             logger.exception("failed to write %d budget debits; retrying", len(rows))
             if self._closing:
+                self._shutdown_failures += 1
+                if self._shutdown_failures >= SHUTDOWN_FLUSH_ATTEMPTS:
+                    self._abandon_debits()
+                    return
                 await asyncio.sleep(self._flush_interval)  # don't spin while shutting down
             return
         for key, (spent, count) in snapshot.items():  # remove only what was written
@@ -297,6 +304,16 @@ class RequestLog:
                 del self._debits[key]
             else:
                 self._debits[key] = (left_spent - spent, left_count - count)
+
+    def _abandon_debits(self) -> None:
+        """Shutting down and the database won't take them: log every debit so it can be
+        replayed by hand, rather than hang the process until it is killed."""
+        lines = [
+            f"key_id={key_id} month={month} usd={spent:.6f} requests={count}"
+            for (key_id, month), (spent, count) in self._debits.items()
+        ]
+        logger.error("unwritten budget debits (replay manually):\n%s", "\n".join(lines))
+        self._debits.clear()
 
     async def _upsert_debits(self, conn: AsyncConnection, rows: list[dict[str, Any]]) -> None:
         dialect = postgresql if conn.dialect.name == "postgresql" else sqlite

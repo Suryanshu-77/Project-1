@@ -41,6 +41,7 @@ from tierwise.router.router import RoutingResult, route
 from tierwise.schema import ChatRequest, ChatResponse, FinishReason, StreamChunk, Usage
 from tierwise.selector import NoEligibleModel, select
 from tierwise.store import KeyRow, RequestLog, RequestRecord
+from tierwise.tokens import estimate_text, estimate_tokens
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -323,9 +324,20 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 
             streamed_chunks: list[StreamChunk] = []
 
+            def streamed_estimate() -> float | None:
+                """No usage chunk (the client left, or upstream broke after content): the
+                provider still bills what it generated, so charge an estimate of it."""
+                text = "".join(c.content or "" for c in streamed_chunks)
+                if not text:
+                    return None
+                guess = Usage(
+                    input_tokens=estimate_tokens(forward), output_tokens=estimate_text(text)
+                )
+                return cost_usd(guess, spec)
+
             def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
                 recorder.done(usage, status, code)
-                settle(recorder.costs(usage)[0] if usage is not None else None)
+                settle(recorder.costs(usage)[0] if usage is not None else streamed_estimate())
                 if status == 200:
                     breakers.record(spec.provider, spec.id, None)
                     remember(spec, option)

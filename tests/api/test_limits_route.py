@@ -119,3 +119,25 @@ async def test_abandoned_stream_releases_reservation() -> None:
         await anext(iterator)
         await iterator.aclose()  # type: ignore[attr-defined]
         assert budgets.reserved(row.id) == 0.0 and budgets.spent(row.id) == 0.0
+
+
+async def test_stream_failing_after_content_still_debits_an_estimate(tmp_path: Path) -> None:
+    from tests.api.helpers import openai_chunk, sse
+    from tests.api.test_stream_hold import TWO
+
+    def broken(request: httpx.Request) -> httpx.Response:  # content, then no usage chunk
+        return sse(openai_chunk({"content": "x" * 400}), done=False, raw_tail=b"data: {x\n\n")
+
+    async with gateway(broken, registry=TWO, db_dir=tmp_path, require_api_key=True) as (
+        app, client,
+    ):  # fmt: skip
+        key, row = await make_key(app, budget=10.0)
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={"model": "auto", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+            headers=_auth(key),
+        )
+        assert '"error"' in resp.text  # failed in-band after content
+        spent = app.state.budgets.spent(row.id)
+        assert app.state.budgets.reserved(row.id) == 0.0
+    assert spent > 0  # the tokens were generated and billed upstream
