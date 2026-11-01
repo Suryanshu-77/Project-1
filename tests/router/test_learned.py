@@ -112,3 +112,11 @@ async def test_image_only_request_still_decides(executor: ThreadPoolExecutor) ->
     image = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]
     decision = await _router(executor).decide(_req(image))
     assert decision.source == "learned"
+
+
+def test_score_batch_matches_single(executor: ThreadPoolExecutor) -> None:
+    router = _router(executor)
+    a, b = _req("explain the CAP theorem"), _req("hi")
+    np.testing.assert_allclose(
+        router.score_batch([a, b]), [router._score_sync(a), router._score_sync(b)]
+    )

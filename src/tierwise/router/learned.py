@@ -67,10 +67,14 @@ class LearnedRouter:
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
+    def score_batch(self, reqs: list[ChatRequest]) -> np.ndarray:
+        """Blocking: P(strong model needed) for each request, in one padded ONNX batch."""
+        embeddings = self._embedder.embed([build_inputs(self._tokenizer, r) for r in reqs])
+        return self._classifier.predict_proba(embeddings)
+
     def _score_sync(self, req: ChatRequest) -> float:
         """Blocking: tokenization and ONNX inference. Runs in the router's thread pool."""
-        embedding = self._embedder.embed([build_inputs(self._tokenizer, req)])
-        return float(self._classifier.predict_proba(embedding)[0])
+        return float(self.score_batch([req])[0])
 
     async def decide(self, req: ChatRequest) -> RoutingDecision:
         loop = asyncio.get_running_loop()
