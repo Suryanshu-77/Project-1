@@ -1,7 +1,7 @@
 """The routing pipeline: override tag, rules, learned router, and a fallback that never fails."""
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from tierwise.router import RoutingDecision
 from tierwise.router.learned import LearnedRouter
@@ -39,6 +39,19 @@ def required_caps(req: ChatRequest) -> frozenset[str]:
     return frozenset(caps)
 
 
+def _escalate(rules: RoutingDecision, learned: RoutingDecision) -> RoutingDecision:
+    """Learned decides, but rules can only push difficulty up (the bias stays upward).
+
+    The classifier learned "a cheap model answered acceptably", so textbook-hard prompts
+    (proofs, derivations, legal review) can score low; the rules' keywords catch those.
+    """
+    return replace(
+        learned,
+        difficulty=max(rules.difficulty, learned.difficulty),
+        signals={**learned.signals, "rules_difficulty": rules.difficulty},
+    )
+
+
 async def route(req: ChatRequest, learned: LearnedRouter | None = None) -> RoutingResult:
     """Raises only for bad client input (UnknownRoutingValue, EmptyAfterTag)."""
     target = parse_target(req.model)
@@ -53,7 +66,7 @@ async def route(req: ChatRequest, learned: LearnedRouter | None = None) -> Routi
             try:
                 decision = rules_decision(cleaned)
                 if learned is not None and decision.confidence < RULES_SHORTCUT:
-                    decision = await learned.decide(cleaned)
+                    decision = _escalate(decision, await learned.decide(cleaned))
             except Exception:
                 logger.exception("router failed; using the fallback decision")
                 decision = FALLBACK

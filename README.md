@@ -4,7 +4,11 @@ A self-hosted, OpenAI-compatible LLM gateway that picks the cheapest model expec
 each request well, across Anthropic, OpenAI, Gemini and local Ollama models, and measures whether
 that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 
-Status: early development (M3: automatic routing by a rules-based difficulty scorer, across
+**Benchmark:** on 3,943 held-out prompts, tierwise's router keeps 95% of GPT-4's quality at 44%
+of its cost (random routing: 63%). Method, out-of-distribution results and limitations are in
+[BENCHMARK.md](BENCHMARK.md).
+
+Status: early development (M5: rules plus a learned router, measured by an eval harness, across
 four providers with streaming, a model registry, cost tracking and a request log).
 Design: [docs/superpowers/specs/2026-11-01-tierwise-design.md](docs/superpowers/specs/2026-11-01-tierwise-design.md)
 
@@ -89,8 +93,9 @@ Retune the scorer by editing `WEIGHTS` in `rules.py` and running
 
 ### Learned router
 
-When the rules score lands in the unsure middle (confidence below 0.8), a trained classifier
-decides. It embeds the last two user turns and the head of the system prompt (at most 256
+The rules router decides alone only when it is confident (confidence of 0.8 or more, about 1.5%
+of real prompts); everywhere else a trained classifier decides, and the rules can only raise its
+difficulty, never lower it. It embeds the last two user turns and the head of the system prompt (at most 256
 tokens) with MiniLM on ONNX Runtime, and a small classifier head predicts P(a cheap model's
 answer won't be good enough). Inference runs in a two-thread pool, never on the event loop.
 

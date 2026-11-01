@@ -35,6 +35,8 @@ train = [
     "scikit-learn>=1.5",
     "huggingface_hub>=0.24",
     "onnx>=1.16",
+    "matplotlib>=3.9",
+    "pyarrow>=17",
 ]
 
 [build-system]

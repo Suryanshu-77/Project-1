@@ -4,7 +4,8 @@ Each row has a prompt and a GPT-4 judge's 1-5 grade of Mixtral's answer. A low g
 cheap model wasn't good enough, so the prompt needed a strong model.
 
 Usage: uv run --group train python -m training.prepare_data [--limit 40000]
-Writes training/data/{train,val,test}.jsonl with {"prompt", "label"}.
+Writes training/data/{train,val,test}.jsonl with {"prompt", "label"} plus the fields
+evaluation.datasets needs (Mixtral's grade and the prompt and answer lengths).
 """
 
 import argparse
@@ -44,7 +45,18 @@ def prepare(rows: Iterable[dict[str, Any]], limit: int | None) -> dict[Split, li
         prompt, score = row.get("prompt"), row.get("mixtral_score")
         if not isinstance(prompt, str) or not prompt.strip() or score is None:
             continue
-        unique.setdefault(normalize(prompt), {"prompt": prompt, "label": label(int(score))})
+        unique.setdefault(
+            normalize(prompt),
+            {
+                "prompt": prompt,
+                "label": label(int(score)),
+                # kept for evaluation.datasets: the cheap answer's grade and both answers' sizes
+                "mixtral_score": int(score),
+                "prompt_chars": len(prompt),
+                "gpt4_chars": len(row.get("gpt4_response") or ""),
+                "mixtral_chars": len(row.get("mixtral_response") or ""),
+            },
+        )
     kept = sorted(unique.items(), key=lambda kv: _bucket(kv[0]))  # hash order = a random sample
     if limit is not None:
         kept = kept[:limit]
