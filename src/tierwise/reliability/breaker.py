@@ -89,9 +89,12 @@ class Breakers:
         cooldown_s: float = 30.0,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
-        self._new = lambda: CircuitBreaker(failures, window_s, cooldown_s, clock)
+        self._settings = (failures, window_s, cooldown_s, clock)
         self._models: dict[tuple[str, str], CircuitBreaker] = {}
         self._providers: dict[str, CircuitBreaker] = {}
+
+    def _new(self) -> CircuitBreaker:
+        return CircuitBreaker(*self._settings)
 
     def model(self, provider: str, model_id: str) -> CircuitBreaker:
         key = (provider, model_id)
