@@ -30,6 +30,11 @@ class RateLimited(GatewayError):
         self.retry_after = retry_after
 
 
+class BudgetExceeded(GatewayError):
+    def __init__(self, message: str) -> None:
+        super().__init__(429, "budget_exceeded", message, "insufficient_quota")
+
+
 class AllCircuitsOpen(GatewayError):
     """Every candidate's circuit breaker is open, so nothing was attempted."""
 

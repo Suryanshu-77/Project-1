@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -12,7 +13,7 @@ from tierwise import __version__
 from tierwise.affinity import AffinityTable
 from tierwise.api.errors import install_error_handlers
 from tierwise.api.routes import router
-from tierwise.budgets import RateLimiter
+from tierwise.budgets import Budgets, RateLimiter, month_of
 from tierwise.cache import SemanticCache
 from tierwise.config import Settings
 from tierwise.keys import KeyStore
@@ -95,6 +96,10 @@ def create_app(
         app.state.keys = keys
         app.state.require_api_key = config.require_api_key
         app.state.limiter = RateLimiter()
+        budgets = Budgets(log)
+        month = month_of(time.time())
+        budgets.load(month, await log.load_month_spend(month))
+        app.state.budgets = budgets
         refresh = asyncio.create_task(keys.refresh_forever(log, config.keys_refresh_s))
         try:
             yield

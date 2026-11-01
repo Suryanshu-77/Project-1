@@ -6,9 +6,15 @@ Both live in memory, so the request path never reads the database.
 import math
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import UTC, datetime
 
-from tierwise.api.errors import RateLimited
-from tierwise.store import KeyRow
+from tierwise.api.errors import BudgetExceeded, RateLimited
+from tierwise.registry import ModelSpec
+from tierwise.schema import ChatRequest
+from tierwise.selector import estimated_cost
+from tierwise.store import KeyRow, RequestLog
+from tierwise.tokens import estimate_output, estimate_tokens
 
 
 class TokenBucket:
@@ -55,3 +61,70 @@ class RateLimiter:
         wait = bucket.take()
         if wait > 0:
             raise RateLimited(retry_after=max(1, math.ceil(wait)))
+
+
+def month_of(ts: float) -> str:
+    """The budget period: the UTC calendar month, "YYYY-MM"."""
+    return datetime.fromtimestamp(ts, UTC).strftime("%Y-%m")
+
+
+def estimate_for(spec: ModelSpec, req: ChatRequest, thinking_tokens: int = 0) -> float:
+    """What the selector expects this request to cost on ``spec`` (no cache discount)."""
+    base = estimated_cost(spec, estimate_tokens(req), estimate_output(req), 0)
+    return base + thinking_tokens * spec.price_out / 1e6
+
+
+@dataclass
+class Reservation:
+    key_id: str
+    month: str
+    amount: float
+
+
+class Budgets:
+    """Monthly spend per key, in memory. A request reserves its estimate before calling and
+    settles the actual cost afterwards, so concurrent requests can't jointly overshoot."""
+
+    def __init__(self, log: RequestLog, clock: Callable[[], float] = time.time) -> None:
+        self._log = log
+        self._clock = clock
+        self._spent: dict[tuple[str, str], float] = {}
+        self._reserved: dict[tuple[str, str], float] = {}
+
+    def load(self, month: str, spend: dict[str, float]) -> None:
+        for key_id, spent in spend.items():
+            self._spent[(key_id, month)] = spent
+
+    def spent(self, key_id: str, month: str | None = None) -> float:
+        return self._spent.get((key_id, month or month_of(self._clock())), 0.0)
+
+    def reserved(self, key_id: str, month: str | None = None) -> float:
+        return self._reserved.get((key_id, month or month_of(self._clock())), 0.0)
+
+    def reserve(self, key: KeyRow, estimate: float) -> Reservation | None:
+        """None for a key without a budget; raises BudgetExceeded when it doesn't fit."""
+        budget = key.monthly_budget_usd
+        if budget is None:
+            return None
+        month = month_of(self._clock())
+        spent, reserved = self.spent(key.id, month), self.reserved(key.id, month)
+        if spent + reserved + estimate > budget:
+            raise BudgetExceeded(
+                f"Monthly budget exceeded for this API key: spent ${spent:.2f}, "
+                f"${reserved:.2f} in flight, ${estimate:.2f} estimated, budget ${budget:.2f}."
+            )
+        self._reserved[(key.id, month)] = reserved + estimate
+        return Reservation(key.id, month, estimate)
+
+    def settle(
+        self, reservation: Reservation | None, key: KeyRow | None, actual: float | None
+    ) -> None:
+        """Release the reservation and charge what the request really cost (None: nothing)."""
+        if reservation is not None:
+            slot = (reservation.key_id, reservation.month)
+            self._reserved[slot] = max(0.0, self._reserved.get(slot, 0.0) - reservation.amount)
+        if key is None or actual is None:
+            return
+        month = month_of(self._clock())
+        self._spent[(key.id, month)] = self.spent(key.id, month) + actual
+        self._log.submit_debit(key.id, month, actual)

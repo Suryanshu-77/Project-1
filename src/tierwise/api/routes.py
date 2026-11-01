@@ -20,6 +20,7 @@ from tierwise.api.streaming import (
     prime_stream,
     sse_response,
 )
+from tierwise.budgets import Budgets, Reservation, estimate_for
 from tierwise.cache import (
     CachedAnswer,
     CacheKey,
@@ -39,7 +40,7 @@ from tierwise.router.modes import VIRTUAL_MODELS, EmptyAfterTag, UnknownRoutingV
 from tierwise.router.router import RoutingResult, route
 from tierwise.schema import ChatRequest, ChatResponse, FinishReason, StreamChunk, Usage
 from tierwise.selector import NoEligibleModel, select
-from tierwise.store import RequestLog, RequestRecord
+from tierwise.store import KeyRow, RequestLog, RequestRecord
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -210,12 +211,31 @@ def _cached_response(
     return JSONResponse(response.to_openai(), headers=headers)
 
 
+def _estimate(plan: _Plan, req: ChatRequest) -> float:
+    """The budget pre-check's estimate: the first candidate, priced like the selector does."""
+    if plan.concrete is not None:
+        return estimate_for(plan.concrete, req)
+    first = plan.candidates[0]
+    return estimate_for(first.spec, req, first.thinking_tokens)
+
+
 @router.post("/v1/chat/completions")
 async def chat_completions(req: ChatRequest, request: Request) -> Response:
     state = request.app.state
     recorder = _Recorder(state.log, state.registry, req.model, req.stream)
     affinity: AffinityTable = state.affinity
     breakers: Breakers = state.breakers
+    budgets: Budgets = state.budgets
+    key: KeyRow | None = None
+    reservation: Reservation | None = None
+    settled = False
+
+    def settle(actual: float | None) -> None:
+        """Release the reservation and debit the actual cost, exactly once per request."""
+        nonlocal settled
+        if not settled:
+            settled = True
+            budgets.settle(reservation, key, actual)
     policy: RetryPolicy = state.retry
     providers: dict[str, Provider] = state.providers
     try:
@@ -240,6 +260,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             hit = cache.lookup(cache_key)
             hit_spec = state.registry.get(hit.model_id) if hit is not None else None
             if hit is not None and hit_spec is not None:
+                settle(0.0)  # a cache hit is free, but it still counts as a request
                 return _cached_response(hit, result, recorder, hit_spec)
 
         def keep(content: str, finish: str, usage: Usage, spec: ModelSpec) -> None:
@@ -249,6 +270,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 
         plan = _choose(result, state, recorder)
         recorder.source = plan.reason
+        if key is not None:
+            reservation = budgets.reserve(key, _estimate(plan, result.request))
 
         def served_by(spec: ModelSpec, option: Option | None, failovers: int) -> dict[str, str]:
             _, sent_effort, effort_header = _forward(result.request, option)
@@ -302,6 +325,7 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
 
             def stream_done(usage: Usage | None, status: int, code: str | None) -> None:
                 recorder.done(usage, status, code)
+                settle(recorder.costs(usage)[0] if usage is not None else None)
                 if status == 200:
                     breakers.record(spec.provider, spec.id, None)
                     remember(spec, option)
@@ -354,17 +378,20 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             spec = option.spec
         headers = served_by(spec, option, failovers)
     except (GatewayError, ProviderError) as exc:
+        settle(None)
         err = exc if isinstance(exc, GatewayError) else gateway_error_from(exc)
         recorder.done(None, err.status, err.code)
         raise err from exc
     except Exception as exc:
         # A bug, not an upstream condition: log it, but still answer in OpenAI's shape.
         logger.exception("unexpected error handling %s", recorder.request_id)
+        settle(None)
         recorder.done(None, 500, "internal_error")
         message = "Internal gateway error."
         raise GatewayError(500, "internal_error", message, "api_error") from exc
     cost, _ = recorder.costs(response.usage)
     recorder.done(response.usage, 200, None)
+    settle(cost)
     remember(spec, option)
     if not response.tool_calls:
         keep(response.content or "", response.finish_reason, response.usage, spec)
