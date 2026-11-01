@@ -505,4 +505,7 @@ async def metrics_endpoint(request: Request) -> Response:
 
 @router.get("/healthz")
 async def healthz(request: Request) -> dict[str, object]:
-    return {"status": "ok", "providers": sorted(request.app.state.providers)}
+    learned = request.app.state.learned
+    version = "rules-only" if learned is None else learned.version
+    return {"status": "ok", "providers": sorted(request.app.state.providers),
+            "router_version": version}  # fmt: skip

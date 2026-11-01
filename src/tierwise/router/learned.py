@@ -65,12 +65,14 @@ class LearnedRouter:
         classifier: Classifier,
         threshold: float,
         executor: ThreadPoolExecutor,
+        version: str | None = None,
     ) -> None:
         self._tokenizer = tokenizer
         self._embedder = embedder
         self._classifier = classifier
         self.threshold = threshold
         self._executor = executor
+        self.version = version  # router.json "version"; None for the shipped classifier
 
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
@@ -114,6 +116,12 @@ class LearnedRouter:
         )
 
 
+def model_path(directory: Path) -> Path:
+    """The encoder: next to the router artifacts, else where `tierwise fetch-model` put it."""
+    local = directory / "model.onnx"
+    return local if local.exists() else CACHE_ROUTER_DIR / "model.onnx"
+
+
 def _load(directory: Path, settings: Settings) -> LearnedRouter:
     config_path = directory / "router.json"
     try:
@@ -123,22 +131,22 @@ def _load(directory: Path, settings: Settings) -> LearnedRouter:
         raise ArtifactError(f"cannot read {config_path}: {exc}") from exc
     if not 0.0 < threshold < 1.0:
         raise ArtifactError(f"{config_path}: threshold {threshold} is outside (0, 1)")
-    model_path = directory / "model.onnx"
-    if not model_path.exists():
-        model_path = CACHE_ROUTER_DIR / "model.onnx"
-    if not model_path.exists():
+    encoder_path = model_path(directory)
+    if not encoder_path.exists():
         raise ArtifactError(f"model.onnx is in neither {directory} nor {CACHE_ROUTER_DIR}; "
                             "run `tierwise fetch-model`")  # fmt: skip
     classifier = Classifier.load(directory / "classifier.npz", expected_dim=dim)
     try:
         tokenizer = load_tokenizer(directory / "tokenizer.json")
-        encoder = OnnxEncoder(model_path, settings.router_threads, settings.router_provider)
+        encoder = OnnxEncoder(encoder_path, settings.router_threads, settings.router_provider)
     except Exception as exc:  # tokenizers and onnxruntime raise their own exception types
         raise ArtifactError(f"cannot load the encoder from {directory}: {exc}") from exc
     if encoder.dim != dim:
         raise ArtifactError(f"encoder produces {encoder.dim}-dim vectors, router.json says {dim}")
     executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="tierwise-router")
-    return LearnedRouter(tokenizer, encoder, classifier, threshold, executor)
+    version = config.get("version")
+    return LearnedRouter(tokenizer, encoder, classifier, threshold, executor,
+                         str(version) if version is not None else None)  # fmt: skip
 
 
 def load_learned(settings: Settings) -> LearnedRouter | None:

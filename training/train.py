@@ -83,8 +83,8 @@ def _load(split: str) -> tuple[list[str], np.ndarray]:
     return [r["prompt"] for r in rows], np.array([r["label"] for r in rows])
 
 
-def _embed(encoder: OnnxEncoder, tokenizer: Any, prompts: list[str]) -> np.ndarray:
-    inputs = [build_inputs(tokenizer, _request(p)) for p in prompts]
+def _embed(encoder: OnnxEncoder, tokenizer: Any, requests: list[ChatRequest]) -> np.ndarray:
+    inputs = [build_inputs(tokenizer, r) for r in requests]
     order = sorted(range(len(inputs)), key=lambda i: len(inputs[i].input_ids))  # less padding
     out = np.zeros((len(inputs), encoder.dim), dtype=np.float32)
     for start in range(0, len(order), BATCH):
@@ -109,7 +109,7 @@ def main() -> None:
     for split in ("train", "val", "test"):
         prompts, y = _load(split)
         print(f"embedding {split}: {len(prompts)} prompts", flush=True)
-        data[split] = (prompts, _embed(encoder, tokenizer, prompts), y)
+        data[split] = (prompts, _embed(encoder, tokenizer, [_request(p) for p in prompts]), y)
 
     _, x_train, y_train = data["train"]
     _, x_val, y_val = data["val"]

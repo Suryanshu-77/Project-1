@@ -351,7 +351,7 @@ async def test_label_spend_sums_month(db_url: str) -> None:
         log.submit_sample(_sample(i))
     await log.stop()
     await log.start()
-    nov, dec = 1793577600.0, 1796256000.0  # 2026-11-03 and 2026-12-04 (UTC)
+    nov, dec = 1793577600.0, 1796256000.0  # 2026-11-02 and 2026-12-03 (UTC)
     await log.save_label(replace(_sample(0), status="labeled", label_cost_usd=0.5, labeled_ts=nov))
     await log.save_label(replace(_sample(1), status="failed", label_cost_usd=0.25, labeled_ts=nov))
     await log.save_label(replace(_sample(2), status="labeled", label_cost_usd=4.0, labeled_ts=dec))
