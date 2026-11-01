@@ -55,7 +55,7 @@ def expand(spec: ModelSpec) -> list[Option]:
     ]
 
 
-def forced(spec: ModelSpec, level: EffortLevel) -> Option | None:
+def forced(spec: ModelSpec, level: str) -> Option | None:
     """The option at ``level`` when the client asked for it: always sent, or None."""
     if spec.efforts is None or level not in spec.efforts.levels:
         return None

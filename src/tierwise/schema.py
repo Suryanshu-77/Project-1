@@ -74,7 +74,9 @@ class ChatRequest(BaseModel):
     stop: str | list[str] | None = None
     stream: bool = False
     stream_options: dict[str, Any] | None = None
-    reasoning_effort: EffortLevel | None = None  # OpenAI's name; adapters translate it
+    # OpenAI's field name. auto/tier only accept tierwise's scale (EffortLevel); for a named
+    # model any value is forwarded and the provider validates it (e.g. OpenAI's "none").
+    reasoning_effort: str | None = None
     tools: list[ToolDef] | None = None
     tool_choice: Any = None
     response_format: dict[str, Any] | None = None

@@ -112,6 +112,7 @@ def select(
         options = [o for m in fits for o in expand(m)]
 
     cost: dict[int, float] = {}
+    warm_tokens: dict[int, int] = {}
     for option in options:
         warm = affinity.longest_warm(
             earlier,
@@ -120,6 +121,7 @@ def select(
             option.wire_effort,
             option.spec.effort_in_cache_key,
         )
+        warm_tokens[id(option)] = warm
         thinking = option.thinking_tokens * option.spec.price_out / 1_000_000
         cost[id(option)] = estimated_cost(option.spec, est_input, est_output, warm) + thinking
 
@@ -142,7 +144,11 @@ def select(
     below = [o for o in by_quality if quality[id(o)] < bar]
     reason: Reason = decision.source
     incumbent_id = affinity.chain_incumbent(earlier, lambda mid: _ttl(registry, mid))
-    incumbent = next((o for o in clear if o.spec.id == incumbent_id), None)  # cheapest effort
+    # the incumbent's cheapest *warm* option: a cold one (different effort on a model whose
+    # cache depends on effort) has no cache to keep
+    incumbent = next(
+        (o for o in clear if o.spec.id == incumbent_id and warm_tokens[id(o)] > 0), None
+    )
     if incumbent is not None and cost[id(incumbent)] <= AFFINITY_SLACK * cost[id(clear[0])]:
         clear = [incumbent, *(o for o in clear if o is not incumbent)]
         reason = "affinity"

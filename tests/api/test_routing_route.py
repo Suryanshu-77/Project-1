@@ -323,3 +323,33 @@ async def test_stream_sets_effort_header() -> None:
     async with gateway(handler, registry=_effort_registry()) as (_, client):
         resp = await client.post("/v1/chat/completions", json=_hi(stream=True))
     assert resp.headers["X-Tierwise-Effort"] == "low"
+
+
+async def test_concrete_model_forwards_off_scale_effort() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post(
+            "/v1/chat/completions", json={**_hi(reasoning_effort="none"), "model": "eff-gpt"}
+        )
+    assert resp.status_code == 200
+    assert sent[0]["reasoning_effort"] == "none"
+    assert resp.headers["X-Tierwise-Effort"] == "none"
+
+
+async def test_off_scale_effort_on_auto_422_naming_it() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=_hi(reasoning_effort="none"))
+    assert resp.status_code == 422
+    assert "none" in resp.json()["error"]["message"]
+    assert sent == []
+
+
+async def test_log_stores_level_that_ran_not_default(tmp_path: Path) -> None:
+    _, handler = _capture()
+    registry = _effort_registry(default="low")
+    async with gateway(handler, registry=registry, db_dir=tmp_path) as (app, client):
+        resp = await client.post("/v1/chat/completions", json=_hi())
+    assert resp.headers["X-Tierwise-Effort"] == "default"  # nothing was sent
+    [row] = await app.state.log.fetch_all()
+    assert row.effort == "low"  # but the provider ran at its default level, low

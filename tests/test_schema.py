@@ -124,11 +124,12 @@ def test_chunk_to_openai_usage_only() -> None:
     assert out["usage"]["prompt_tokens_details"] == {"cached_tokens": 3}
 
 
-def test_reasoning_effort_validated() -> None:
-    with pytest.raises(ValidationError):
-        ChatRequest.model_validate(
-            {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": "ultra"}
-        )
+def test_reasoning_effort_accepts_provider_values() -> None:
+    # tierwise's scale only applies to auto/tier; a named model's provider validates the rest
+    req = ChatRequest.model_validate(
+        {"messages": [{"role": "user", "content": "hi"}], "reasoning_effort": "none"}
+    )
+    assert req.reasoning_effort == "none"
 
 
 def test_to_openai_reports_reasoning_tokens() -> None:

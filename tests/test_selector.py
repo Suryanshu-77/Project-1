@@ -393,3 +393,25 @@ def test_low_effort_penalty_scales_with_difficulty() -> None:
     assert effective_quality(low, 0.0) == pytest.approx(0.80)  # trivial: no penalty
     assert effective_quality(medium, 1.0) == pytest.approx(0.80)  # default: no shift
     assert effective_quality(high, 0.1) == pytest.approx(0.83)  # bonuses don't scale
+
+
+def test_affinity_does_not_promote_a_cold_option_of_the_incumbent() -> None:
+    registry = Registry(
+        baseline_model="sonnet",
+        models=[
+            spec("mini", "openai", 0.90, 1.0, 1.0),
+            spec("sonnet", "anthropic", 0.90, 1.0, 1.0, price_cache_read=0.1, cache_ttl_s=300,
+                 effort_in_cache_key=True,
+                 efforts=_efforts("high", medium=(0.0, 100), high=(0.0, 4000))),
+        ],
+    )  # fmt: skip
+    req = _conv("q2")
+    prefix, _ = split_prefix(req)
+    assert prefix is not None
+    table = AffinityTable()
+    table.record(prefix, "sonnet", None)  # served at sonnet's default (high): nothing sent
+    selection = select(_result(req, 0.1), registry, ALL_PROVIDERS, table)
+    # sonnet@medium is within 10% of mini but cold (effort is in its cache key);
+    # sonnet@high is warm but far more expensive -> no affinity, mini wins on cost
+    assert selection.candidates[0].spec.id == "mini"
+    assert selection.reason == "rules"

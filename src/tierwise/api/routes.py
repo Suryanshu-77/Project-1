@@ -143,7 +143,8 @@ async def chat_completions(req: ChatRequest, request: Request) -> Response:
             sent_effort = option.wire_effort
             forward = result.request.model_copy(update={"reasoning_effort": sent_effort})
             effort_header = option.header_value
-        recorder.effort = effort_header
+        # log the level that actually ran (the model's default when nothing was sent)
+        recorder.effort = sent_effort if option is None else option.effort
         headers = {
             "X-Tierwise-Model": spec.id,
             "X-Tierwise-Provider": provider.name,
