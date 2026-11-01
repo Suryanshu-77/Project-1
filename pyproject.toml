@@ -13,6 +13,9 @@ dependencies = [
     "pyyaml>=6.0.3",
     "sqlalchemy[asyncio]>=2",
     "aiosqlite>=0.22.1",
+    "onnxruntime>=1.20",
+    "tokenizers>=0.20",
+    "numpy>=2",
 ]
 
 [dependency-groups]
@@ -24,6 +27,14 @@ dev = [
     "mypy>=1.11",
     "openai>=1.40",
     "types-pyyaml>=6.0.12.20261030",
+]
+train = [
+    "torch>=2.4",
+    "transformers>=4.44",
+    "sentence-transformers>=3",
+    "scikit-learn>=1.5",
+    "huggingface_hub>=0.24",
+    "onnx>=1.16",
 ]
 
 [build-system]
@@ -48,3 +59,7 @@ select = ["E", "F", "I", "UP", "B"]
 [tool.mypy]
 strict = true
 python_version = "3.12"
+
+[[tool.mypy.overrides]]
+module = ["onnxruntime.*"]
+ignore_missing_imports = true
