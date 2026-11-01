@@ -125,6 +125,56 @@ uv run python scripts/bench_router.py             # p50 latency, budget 10 ms
 
 Set `TIERWISE_LEARNED_ROUTER=false` to turn it off; `TIERWISE_ROUTER_DIR` points elsewhere.
 
+## Reliability
+
+A request survives a failing model or provider:
+
+- **Retry.** Up to 2 retries on the same model for rate limits, 5xx and timeouts, with
+  exponential backoff and full jitter. Bad requests (4xx) and rejected credentials are never
+  retried.
+- **Failover.** Then the selector's next candidate is tried, up to 3 models per request.
+  - **Provider-wide failures:** after a connection failure or an auth error, the rest of that
+    provider's models are skipped.
+  - **Model failures:** after a model fails, other providers are tried before its siblings.
+  - **Bad requests** are never failed over.
+  - `X-Tierwise-Failovers` and the log's `failover_count` say how many candidates were
+    abandoned. A named model (`"model": "claude-sonnet-5-5"`) is retried but never swapped.
+- **Circuit breakers** run at two levels:
+  - **Per (provider, model):** trips on 429, 5xx and timeouts, so a rate-limited Opus
+    doesn't block Haiku.
+  - **Per provider:** trips on connection failures and auth errors, or when 2 of its models
+    are open.
+  - **Timing:** 5 consecutive failures within 60 s open a breaker. After a 30 s cooldown, a
+    single probe request decides whether it closes again. When every candidate is open, the
+    gateway answers 503 `upstream_unavailable`.
+- **Streams fail over too.** Nothing is sent to the client, not even the 200, until the first
+  real content arrives (capped at 3 s or 4 KB). An upstream that dies before that is replaced
+  without the client noticing. After that point, a failure ends the stream with an
+  OpenAI-style error event.
+
+## Semantic cache
+
+A repeated question is answered without calling a model (`X-Tierwise-Reason: cache`). The
+log records it with cost 0 and the full baseline cost, so it counts toward savings.
+
+- **What has to match:**
+  - **The last user message**, by meaning: MiniLM embeddings with cosine similarity of at
+    least 0.95. A message over 256 tokens must match exactly.
+  - **Everything else**, exactly: the system prompt, earlier turns, the routing mode and tag,
+    and `response_format`.
+- **Skipped when:**
+  - `temperature` is above 0.3 or unset (unset means the provider default, 1.0).
+  - Tools or images are present.
+  - The client sends `Cache-Control: no-cache`.
+  - The model is named explicitly.
+- **Lifetime:** entries live for an hour in memory (10 000 at most, oldest out first). Only
+  complete text answers are stored.
+- **Threshold:** 0.95 is deliberately strict. "What's the capital of France?" and "What is
+  the capital of France?" score 0.91 and miss, while two phrasings of a coding question
+  score 0.98 and hit. Lower `CACHE_SIMILARITY` for more hits at more risk.
+- **Requirements:** the learned router's ONNX encoder must be present. Set
+  `TIERWISE_CACHE=false` to turn the cache off.
+
 ## Providers
 
 | Provider | Enable with | Notes |
