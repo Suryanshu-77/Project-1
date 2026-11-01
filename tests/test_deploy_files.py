@@ -136,3 +136,19 @@ def test_release_publishes_only_after_the_test_suite() -> None:
     needs = release["jobs"]["publish"]["needs"]
     gate = release["jobs"][needs]["steps"]
     assert any("pytest" in str(step.get("run", "")) for step in gate)
+
+
+def test_fake_upstream_judges_hard_prompts_low() -> None:
+    from tierwise.flywheel import JUDGE_MARKER, judge_messages
+
+    module = _fake_upstream()
+    assert module.JUDGE_MARKER == JUDGE_MARKER
+    client = TestClient(module.app)
+
+    def score(prompt: str) -> int:
+        messages = [m.model_dump() for m in judge_messages(f"user: {prompt}", "a", "b", "s1")]
+        reply = client.post("/v1/chat/completions", json={"model": "large", "messages": messages})
+        return int(json.loads(reply.json()["choices"][0]["message"]["content"])["score"])
+
+    assert score("Design a billing architecture") == 2
+    assert score("Translate 'hello' into Spanish") == 5

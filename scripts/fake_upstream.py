@@ -20,6 +20,18 @@ from starlette.routing import Route
 
 STATS: dict[str, Any] = {"requests": 0, "connections": set()}
 REPLY = "This is a canned answer from the fake upstream."
+JUDGE_MARKER = "tierwise-judge-v1"  # must match tierwise.flywheel.JUDGE_MARKER
+HARD = ("design", "prove", "debug", "production", "architecture")
+
+
+def _judge(messages: list[dict[str, Any]]) -> str | None:
+    """A deterministic fake judge: cheap answers to hard-looking prompts score 2, others 5,
+    so flywheel labels carry a signal a retrained router can learn."""
+    first = messages[0] if messages else {}
+    if first.get("role") != "system" or JUDGE_MARKER not in str(first.get("content")):
+        return None
+    conversation = str(messages[-1].get("content")).split("Answer A:")[0].lower()
+    return json.dumps({"score": 2 if any(word in conversation for word in HARD) else 5})
 
 
 def _usage(messages: list[dict[str, Any]]) -> dict[str, int]:
@@ -35,7 +47,7 @@ async def chat(request: Request) -> Response:
     model, usage = body.get("model", "fake"), _usage(body.get("messages", []))
     base = {"id": "fake-1", "model": model, "created": int(time.time())}
     if not body.get("stream"):
-        message = {"role": "assistant", "content": REPLY}
+        message = {"role": "assistant", "content": _judge(body.get("messages", [])) or REPLY}
         choice = {"index": 0, "message": message, "finish_reason": "stop"}
         return JSONResponse({**base, "object": "chat.completion", "choices": [choice],
                              "usage": usage})  # fmt: skip
