@@ -78,3 +78,19 @@ def test_create_rejects_invalid_limits(db: Path, bad: list[str]) -> None:
     with pytest.raises(SystemExit) as info:
         main(["keys", "create", "--name", "x", *bad])
     assert info.value.code == 2
+
+
+def test_keys_create_allow_shadow(db: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    _create(capsys)
+    main(["keys", "create", "--name", "shadowed", "--allow-shadow"])
+    capsys.readouterr()
+
+    async def flags() -> dict[str, bool]:
+        log = RequestLog(f"sqlite+aiosqlite:///{db.as_posix()}")
+        await log.start()
+        try:
+            return {k.name: k.allow_shadow for k in await log.list_keys()}
+        finally:
+            await log.stop()
+
+    assert asyncio.run(flags()) == {"team-a": False, "shadowed": True}

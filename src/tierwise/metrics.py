@@ -60,6 +60,9 @@ class Metrics:
         )
         self._cache_hits = Counter("tierwise_cache_hits", "Semantic cache hits", registry=r)
         self._failovers = Counter("tierwise_failovers", "Candidates abandoned", registry=r)
+        self._shadow = Counter(
+            "tierwise_shadow_samples", "Routed answers sampled for flywheel labels", registry=r
+        )
         self._hold = Histogram(
             "tierwise_ttft_buffer_seconds",
             "Time a stream was held before its first content",
@@ -80,6 +83,9 @@ class Metrics:
             self._cache_hits.inc()
         if record.failover_count:
             self._failovers.inc(record.failover_count)
+
+    def shadow_sample(self) -> None:
+        self._shadow.inc()
 
     def observe_hold(self, seconds: float) -> None:
         self._hold.observe(seconds)

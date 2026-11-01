@@ -57,6 +57,24 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("OTEL_EXPORTER_OTLP_ENDPOINT", "otel_exporter_otlp_endpoint"),
     )
+    store_payloads: bool = Field(  # the flywheel's first opt-in: keep prompts and answers
+        default=False,
+        validation_alias=AliasChoices("TIERWISE_STORE_PAYLOADS", "store_payloads"),
+    )
+    shadow_rate: float = Field(
+        default=0.02,
+        ge=0.0,
+        le=1.0,
+        validation_alias=AliasChoices("TIERWISE_SHADOW_RATE", "shadow_rate"),
+    )
+    shadow_budget_usd: float = Field(
+        default=5.0,
+        ge=0.0,
+        validation_alias=AliasChoices("TIERWISE_SHADOW_BUDGET_USD", "shadow_budget_usd"),
+    )
+    judge_model: str | None = Field(  # None: the registry's baseline_model
+        default=None, validation_alias=AliasChoices("TIERWISE_JUDGE_MODEL", "judge_model")
+    )
     host: str = Field(default="127.0.0.1", validation_alias=AliasChoices("TIERWISE_HOST", "host"))
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))
 

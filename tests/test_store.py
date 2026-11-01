@@ -2,12 +2,13 @@ import asyncio
 import os
 import sqlite3
 from collections.abc import AsyncIterator
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 from sqlalchemy.ext.asyncio import create_async_engine
 
-from tierwise.store import RequestLog, RequestRecord, metadata
+from tierwise.store import RequestLog, RequestRecord, ShadowSample, metadata
 
 
 def _record(i: int = 0, **overrides: object) -> RequestRecord:
@@ -302,3 +303,81 @@ async def test_concurrent_flushes_sum_not_overwrite(db_url: str) -> None:
     [(_, _, spent, count)] = await first.fetch_usage()
     await first.stop()
     assert (round(spent, 9), count) == (0.2, 2)
+
+
+def _sample(i: int = 0, **overrides: object) -> ShadowSample:
+    fields: dict[str, object] = {
+        "id": f"s{i}", "ts": 1000.0 + i, "key_id": "k1",
+        "request_json": '{"model": "auto", "messages": [{"role": "user", "content": "hi"}]}',
+        "routed_model": "small", "routed_answer": "hello", "difficulty": 0.2,
+        "confidence": 0.9, "source": "rules",
+    }  # fmt: skip
+    fields.update(overrides)
+    return ShadowSample(**fields)  # type: ignore[arg-type]
+
+
+async def test_sample_roundtrip(db_url: str) -> None:
+    log = RequestLog(db_url)
+    await log.start()
+    assert log.submit_sample(_sample(1)) and log.submit_sample(_sample(0))
+    await log.stop()
+    await log.start()
+    pending = await log.pending_samples(10)
+    await log.stop()
+    assert [s.id for s in pending] == ["s0", "s1"]  # oldest first
+    assert pending[0] == _sample(0)
+
+
+async def test_save_label_moves_out_of_pending(db_url: str) -> None:
+    log = RequestLog(db_url)
+    await log.start()
+    log.submit_sample(_sample(0))
+    log.submit_sample(_sample(1))
+    await log.stop()
+    await log.start()
+    labeled = replace(_sample(0), status="labeled", contrast_model="large",
+                      contrast_answer="better", judge_score=2, needs_strong=True,
+                      label_cost_usd=0.01, labeled_ts=2000.0)  # fmt: skip
+    await log.save_label(labeled)
+    assert [s.id for s in await log.pending_samples(10)] == ["s1"]
+    assert await log.labeled_samples() == [labeled]
+    await log.stop()
+
+
+async def test_label_spend_sums_month(db_url: str) -> None:
+    log = RequestLog(db_url)
+    await log.start()
+    for i in range(3):
+        log.submit_sample(_sample(i))
+    await log.stop()
+    await log.start()
+    nov, dec = 1793577600.0, 1796256000.0  # 2026-11-03 and 2026-12-04 (UTC)
+    await log.save_label(replace(_sample(0), status="labeled", label_cost_usd=0.5, labeled_ts=nov))
+    await log.save_label(replace(_sample(1), status="failed", label_cost_usd=0.25, labeled_ts=nov))
+    await log.save_label(replace(_sample(2), status="labeled", label_cost_usd=4.0, labeled_ts=dec))
+    assert await log.label_spend("2026-11") == pytest.approx(0.75)  # failed labels cost too
+    await log.stop()
+
+
+async def test_sample_queue_full_drops_and_counts(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path), max_queue=2)
+    assert log.submit_sample(_sample(0)) and log.submit_sample(_sample(1))
+    assert not log.submit_sample(_sample(2))
+    assert log.dropped == 1
+
+
+async def test_existing_db_gains_allow_shadow_column(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    await log.create_key("old", "h1", "tw-old", None, None)
+    await log.stop()
+    with sqlite3.connect(tmp_path / "t.db") as conn:  # an M8 database: no allow_shadow yet
+        conn.execute("ALTER TABLE api_keys DROP COLUMN allow_shadow")
+    upgraded = RequestLog(_url(tmp_path))
+    await upgraded.start()
+    assert upgraded.added_columns == ["allow_shadow"]
+    new = await upgraded.create_key("new", "h2", "tw-new", None, None, allow_shadow=True)
+    keys = {k.name: k for k in await upgraded.list_keys()}
+    await upgraded.stop()
+    assert keys["old"].allow_shadow is False and keys["new"].allow_shadow is True
+    assert new.allow_shadow

@@ -42,6 +42,11 @@ def _parser() -> argparse.ArgumentParser:
     create.add_argument("--name", required=True)
     create.add_argument("--budget", type=_budget, help="monthly budget in USD")
     create.add_argument("--rpm", type=_rpm, help="requests per minute")
+    create.add_argument(
+        "--allow-shadow",
+        action="store_true",
+        help="let the data flywheel sample this key's traffic",
+    )
     keys.add_parser("list", help="list keys (no secrets)")
     revoke = keys.add_parser("revoke", help="revoke a key by id")
     revoke.add_argument("id")
@@ -58,7 +63,9 @@ async def _keys(args: argparse.Namespace, db_url: str) -> int:
     try:
         if args.action == "create":
             key = generate_key()
-            row = await log.create_key(args.name, hash_key(key), key[:10], args.budget, args.rpm)
+            row = await log.create_key(
+                args.name, hash_key(key), key[:10], args.budget, args.rpm, args.allow_shadow
+            )
             print(f"id: {row.id}\nkey: {key}\nStore the key now: it is not shown again.")
             return 0
         if args.action == "revoke":
