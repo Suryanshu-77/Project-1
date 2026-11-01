@@ -226,3 +226,100 @@ async def test_stream_ending_in_error_records_no_affinity() -> None:
         follow_up = await client.post("/v1/chat/completions", json=_turn2())
     assert '"error"' in broken.text  # stream ended with an in-band error (logged 502)
     assert follow_up.headers["X-Tierwise-Reason"] == "rules"
+
+
+def _effort_registry(default: str = "medium") -> Registry:
+    levels = {
+        "low": {"quality": -0.15, "thinking_tokens": 100},
+        "medium": {"quality": 0.0, "thinking_tokens": 500},
+        "high": {"quality": 0.03, "thinking_tokens": 2000},
+    }
+    if default == "low":
+        levels = {"low": {"quality": 0.0, "thinking_tokens": 100},
+                  "medium": {"quality": 0.03, "thinking_tokens": 500}}  # fmt: skip
+    model = _spec(
+        "eff-gpt", "openai", 0.80, 0.5, 2.0, efforts={"default": default, "levels": levels}
+    )
+    return Registry(baseline_model="eff-gpt", models=[model])
+
+
+def _capture() -> tuple[list[dict[str, Any]], Any]:
+    sent: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.read()))
+        reply = {
+            "id": "c", "model": "eff-gpt", "created": 1,
+            "choices": [{"index": 0, "message": {"role": "assistant", "content": "pong"},
+                         "finish_reason": "stop"}],
+            "usage": {"prompt_tokens": 3, "completion_tokens": 9,
+                      "completion_tokens_details": {"reasoning_tokens": 7}},
+        }  # fmt: skip
+        if sent[-1].get("stream"):
+            return sse(openai_chunk({"content": "pong"}, "stop"))
+        return httpx.Response(200, json=reply)
+
+    return sent, handler
+
+
+def _hi(**extra: Any) -> dict[str, Any]:
+    return {"model": "auto", "messages": [{"role": "user", "content": "hi"}], **extra}
+
+
+async def test_easy_auto_request_sends_low_effort_and_header() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=_hi())
+    assert resp.headers["X-Tierwise-Effort"] == "low"
+    assert sent[0]["reasoning_effort"] == "low"
+
+
+async def test_default_level_sends_no_effort_field_and_header_default() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry(default="low")) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=_hi())
+    assert resp.headers["X-Tierwise-Effort"] == "default"
+    assert "reasoning_effort" not in sent[0]
+
+
+async def test_client_effort_wins_on_auto() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=_hi(reasoning_effort="high"))
+    assert resp.headers["X-Tierwise-Effort"] == "high"
+    assert sent[0]["reasoning_effort"] == "high"
+
+
+async def test_client_effort_unsupported_on_auto_422_before_upstream() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=_hi(reasoning_effort="max"))
+    assert resp.status_code == 422
+    assert "max" in resp.json()["error"]["message"]
+    assert sent == []
+
+
+async def test_concrete_model_forwards_client_effort_unchanged() -> None:
+    sent, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post(
+            "/v1/chat/completions",
+            json={**_hi(reasoning_effort="minimal"), "model": "eff-gpt"},
+        )
+    assert resp.headers["X-Tierwise-Effort"] == "minimal"
+    assert sent[0]["reasoning_effort"] == "minimal"
+
+
+async def test_log_row_has_effort_and_reasoning_tokens(tmp_path: Path) -> None:
+    _, handler = _capture()
+    async with gateway(handler, registry=_effort_registry(), db_dir=tmp_path) as (app, client):
+        await client.post("/v1/chat/completions", json=_hi())
+    [row] = await app.state.log.fetch_all()
+    assert (row.effort, row.tokens_reasoning) == ("low", 7)
+
+
+async def test_stream_sets_effort_header() -> None:
+    _, handler = _capture()
+    async with gateway(handler, registry=_effort_registry()) as (_, client):
+        resp = await client.post("/v1/chat/completions", json=_hi(stream=True))
+    assert resp.headers["X-Tierwise-Effort"] == "low"
