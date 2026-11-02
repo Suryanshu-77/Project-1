@@ -98,7 +98,8 @@ def load_sprout(
     root = Path(snapshot_download(SPROUT_REPO, repo_type="dataset", allow_patterns=[f"*{split}*"]))
     rows: list[EvalRow] = []
     dropped = 0
-    for path in sorted(root.rglob("*.parquet")):
+    # the cache may hold other splits too: read only this one's files
+    for path in sorted(root.rglob(f"{split}-*.parquet")):
         for rec in pq.read_table(path, columns=["prompt", cheap, strong]).to_pylist():
             row = row_from_sprout(rec, cheap, strong)
             if row is None:
