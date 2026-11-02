@@ -89,9 +89,11 @@ def parse_score(text: str) -> int:
     if match is None:
         raise ValueError(f"judge reply has no JSON object: {text[:80]!r}")
     score = json.loads(match.group(0)).get("score")
-    if not isinstance(score, int) or not 1 <= score <= 5:
+    # bool is an int subclass, so `true` would pass as 1; 4.0 is a fine way to write 4
+    whole = isinstance(score, int | float) and not isinstance(score, bool) and score == int(score)
+    if not whole or not 1 <= score <= 5:
         raise ValueError(f"judge score {score!r} is not an integer from 1 to 5")
-    return score
+    return int(score)
 
 
 async def _ask(

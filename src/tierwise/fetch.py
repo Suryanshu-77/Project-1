@@ -18,6 +18,7 @@ MODEL_URL = (
     "1110a243fdf4706b3f48f1d95db1a4f5529b4d41/onnx/model.onnx"
 )
 MODEL_SHA256 = "6fd5d72fe4589f189f8ebc006442dbb529bb7ce38f8082112682524616046452"
+MODEL_SIZE = 90_405_214  # bytes; a mirror sending more is stopped before it fills the disk
 CHUNK = 1 << 20
 
 
@@ -42,6 +43,7 @@ def fetch_model(
     url: str = MODEL_URL,
     sha256: str = MODEL_SHA256,
     opener: Callable[[str], BinaryIO] = _open,
+    max_bytes: int = MODEL_SIZE,
 ) -> Path:
     """Write `out_dir/model.onnx` atomically; a bad hash or a broken download leaves nothing."""
     target = out_dir / "model.onnx"
@@ -56,6 +58,8 @@ def fetch_model(
                 tmp.write(block)
                 digest.update(block)
                 written += len(block)
+                if written > max_bytes:
+                    raise FetchError(f"download of {url} is larger than {max_bytes} bytes")
                 if written - reported >= 10 * CHUNK:
                     print(f"  {written / CHUNK:.0f} MB", file=sys.stderr)
                     reported = written

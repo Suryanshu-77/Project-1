@@ -269,3 +269,11 @@ async def test_transient_judge_error_is_retried(log: RequestLog) -> None:
     run = await label_pending(log, REGISTRY, _providers(handler), _judge(), 100.0, 10,
                               policy=RetryPolicy(retries=2, base_s=0.0, max_s=0.0))  # fmt: skip
     assert (run.labeled, run.failed, len(judged)) == (1, 0, 2)
+
+
+def test_parse_score_rejects_bool_accepts_integral_float() -> None:
+    with pytest.raises(ValueError):
+        parse_score('{"score": true}')  # bool is an int subclass in Python
+    assert parse_score('{"score": 4.0}') == 4
+    with pytest.raises(ValueError):
+        parse_score('{"score": 3.5}')
