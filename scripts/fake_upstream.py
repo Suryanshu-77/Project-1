@@ -5,10 +5,18 @@ scales with the prompt, so the dashboard shows real-looking traffic without any 
 ``GET /stats`` reports how many requests and distinct client connections it has seen, which
 the smoke check uses to confirm the gateway reuses pooled connections.
 
+Two knobs make the dashboard demo look like real traffic; both are off by default:
+``FAKE_DELAY_S`` adds latency that grows with model size (small 1x, medium 2.5x, large 5x,
++-30%), and ``FAKE_FAIL_RATE`` answers that share of requests with a 503, which the gateway
+retries and fails over. Judge calls never fail.
+
 Run: uvicorn --app-dir scripts fake_upstream:app --host 0.0.0.0 --port 8080
 """
 
+import asyncio
 import json
+import os
+import random
 import time
 from collections.abc import AsyncIterator
 from typing import Any
@@ -22,6 +30,9 @@ STATS: dict[str, Any] = {"requests": 0, "connections": set()}
 REPLY = "This is a canned answer from the fake upstream."
 JUDGE_MARKER = "tierwise-judge-v1"  # must match tierwise.flywheel.JUDGE_MARKER
 HARD = ("design", "prove", "debug", "production", "architecture")
+DELAY_S = float(os.environ.get("FAKE_DELAY_S", "0"))
+FAIL_RATE = float(os.environ.get("FAKE_FAIL_RATE", "0"))
+SIZE = {"small": 1.0, "medium": 2.5, "large": 5.0}
 
 
 def _judge(messages: list[dict[str, Any]]) -> str | None:
@@ -45,9 +56,15 @@ async def chat(request: Request) -> Response:
         STATS["connections"].add((request.client.host, request.client.port))
     body = await request.json()
     model, usage = body.get("model", "fake"), _usage(body.get("messages", []))
+    judged = _judge(body.get("messages", []))
+    if judged is None and random.random() < FAIL_RATE:
+        return JSONResponse({"error": {"message": "fake overload", "type": "server_error"}},
+                            status_code=503)  # fmt: skip
+    if DELAY_S:
+        await asyncio.sleep(DELAY_S * SIZE.get(model, 1.0) * random.uniform(0.7, 1.3))
     base = {"id": "fake-1", "model": model, "created": int(time.time())}
     if not body.get("stream"):
-        message = {"role": "assistant", "content": _judge(body.get("messages", [])) or REPLY}
+        message = {"role": "assistant", "content": judged or REPLY}
         choice = {"index": 0, "message": message, "finish_reason": "stop"}
         return JSONResponse({**base, "object": "chat.completion", "choices": [choice],
                              "usage": usage})  # fmt: skip
