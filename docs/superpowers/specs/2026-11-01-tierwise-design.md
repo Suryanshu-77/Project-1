@@ -250,7 +250,7 @@ Rev 6 moves the contrast call and the judge **offline**. The label is a property
 
 ### 5.3 Hardening (0.9.1)
 These fixes come from review findings that a real user could hit:
-- **Contrast model.** It must be able to serve the stored request, using the selector's own capability and context check. It is `baseline_model` when another model answered, otherwise the cheapest fitting `basic` model. A sample with no fitting contrast model fails before any paid call.
+- **Contrast model.** It must be able to serve the stored request, using the selector's own capability and context check. It is `baseline_model` when a cheaper, non-flagship model answered, and the cheapest fitting `basic` model when any flagship answered: a flagship is the strong side of the label. A sample with no fitting contrast model fails before any paid call.
 - **Sampling.** A stream that ends normally is sampled even without a usage chunk; Ollama never sends one. Caching still needs real usage.
 - **Startup.** It never fails because the home directory can't be resolved (containers running under an arbitrary user ID).
 - **Retrain.** A version folder appears only once complete. Retrain checks the encoder's dimension against `router.json`.

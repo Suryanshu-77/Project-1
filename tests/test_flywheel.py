@@ -160,7 +160,10 @@ async def test_no_fitting_contrast_fails_before_any_call(log: RequestLog) -> Non
     assert calls == []  # nothing was paid for
 
 
-@pytest.mark.parametrize("bad", ["not json", '{"score": 9}', '{"score": "high"}', "{}"])
+@pytest.mark.parametrize(
+    "bad", ["not json", '{"score": 9}', '{"score": "high"}', "{}", '{"score": Infinity}',
+            '{"score": NaN}', '{"score": 1e400}']
+)
 def test_parse_score_rejects_bad_replies(bad: str) -> None:
     with pytest.raises(ValueError):
         parse_score(bad)
@@ -277,3 +280,14 @@ def test_parse_score_rejects_bool_accepts_integral_float() -> None:
     assert parse_score('{"score": 4.0}') == 4
     with pytest.raises(ValueError):
         parse_score('{"score": 3.5}')
+
+
+def test_non_baseline_flagship_gets_a_basic_contrast() -> None:
+    """A cheaper flagship is still the strong side: comparing it with the baseline would label
+    hard prompts 'easy', teaching the router the dangerous direction."""
+    other = ModelSpec.model_validate({
+        "id": "other-flagship", "provider": "openai", "price_in": 10.0, "price_out": 10.0,
+        "context": 100_000, "caps": ["tools", "json"], "quality": 0.9, "tier": "flagship",
+    })  # fmt: skip
+    registry = Registry(baseline_model="large", models=[*REGISTRY.models, other])
+    assert contrast_for(other, TEXT, registry, {"openai"}) == registry.get("small")

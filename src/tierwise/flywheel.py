@@ -49,14 +49,15 @@ def contrast_for(
 ) -> ModelSpec | None:
     """The model whose answer the routed one is compared with (spec §5.2, §5.3).
 
-    `baseline_model` when another model answered; the cheapest `basic` model when the baseline
-    answered. Either way it must be configured (its provider in `providers`) and able to serve
-    `request` (`fits`). None when nothing qualifies: the sample then fails before any paid call.
+    `baseline_model` when a cheaper, non-flagship model answered; the cheapest `basic` model
+    when a flagship (the baseline or another) answered: a flagship is the strong side. Either
+    way it must be configured (its provider in `providers`) and able to serve `request`
+    (`fits`). None when nothing qualifies: the sample then fails before any paid call.
     """
     caps = required_caps(request)
     tokens = estimate_tokens(request) + estimate_output(request)
     
-    if routed.id != registry.baseline_model:
+    if routed.id != registry.baseline_model and routed.tier != "flagship":
         baseline = registry.get(registry.baseline_model)
         if baseline and baseline.provider in providers and fits(baseline, caps, tokens):
             return baseline
@@ -89,9 +90,10 @@ def parse_score(text: str) -> int:
     if match is None:
         raise ValueError(f"judge reply has no JSON object: {text[:80]!r}")
     score = json.loads(match.group(0)).get("score")
-    # bool is an int subclass, so `true` would pass as 1; 4.0 is a fine way to write 4
-    whole = isinstance(score, int | float) and not isinstance(score, bool) and score == int(score)
-    if not whole or not 1 <= score <= 5:
+    # bool is an int subclass, so `true` would pass as 1; 4.0 is a fine way to write 4. The
+    # range check comes first: int() of inf (JSON Infinity, 1e400) raises OverflowError.
+    number = isinstance(score, int | float) and not isinstance(score, bool)
+    if not (number and 1 <= score <= 5 and score == int(score)):
         raise ValueError(f"judge score {score!r} is not an integer from 1 to 5")
     return int(score)
 
