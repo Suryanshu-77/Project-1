@@ -59,6 +59,25 @@ def test_target_is_reachable(rows: list[EvalRow]) -> None:
     assert evaluate_classifier(np.zeros(len(rows)), rows, 0).cost_saved is not None
 
 
+def test_target_closes_half_the_gap_never_below_95() -> None:
+    assert quality_target(_easy_rows()) == pytest.approx(0.975)  # all-cheap 95% -> 97.5%
+    assert quality_target(_rows([True, False] * 10)) == 0.95  # all-cheap 50%: the floor
+    assert quality_target([EvalRow("better", 1.0, 0.5, 0.1, 1.0)] * 5) == 1.0
+
+
+def test_a_target_of_one_survives_float_rounding() -> None:
+    # cheap and strong tie in total, so the target is exactly 1.0, while sweep's prefix sums
+    # can land a hair below it on every point, all-strong included
+    for seed in range(50):
+        rng = np.random.default_rng(seed)
+        q_strong = np.round(rng.random(40), 2)
+        q_cheap = rng.permutation(q_strong)
+        rows = [EvalRow(f"p{i}", float(c), float(s), 0.1, 1.0)
+                for i, (c, s) in enumerate(zip(q_cheap, q_strong, strict=True))]  # fmt: skip
+        for scores in (np.zeros(40), rng.random(40)):
+            assert evaluate_classifier(scores, rows, 0).cost_saved is not None, seed
+
+
 GOOD = GateResult(cost_saved=0.50, critical_misroutes=0, auc=0.80)
 
 
