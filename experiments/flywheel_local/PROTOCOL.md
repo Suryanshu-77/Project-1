@@ -102,3 +102,26 @@ Reported alongside, not as tests:
 - **Single-turn, two models, one domain.** A pass shows the mechanism works on this pair. It
   doesn't show the size of the gain on other traffic.
 - **The confirm half is used once.** Further runs against it would turn it into a dev set.
+
+## Amendment 1 (2026-11-03: after stage 0, before stage 1; the confirm half has not been loaded)
+
+Stage 0 passed G N2000 w5 (+12.9 points, interval [+1.5, +27.7]). Its intervals are about
+±13 points, because the dev half holds only 237 prompts where gpt-4o-mini truly fails. A
+realistic Haiku gain of about +8 would clear the bar about 1 time in 4 on the confirm half
+alone. So, before any paid call:
+
+1. **A larger confirm set:** the confirm half of the test split, **plus every train-split
+   prompt outside the 2,000-prompt pool**. The same exclusions apply, plus the one SPROUT
+   prompt that also appears in the base data. That's about 10× the rows and about 3× narrower
+   intervals. None of these prompts is ever trained on. The noise band and the shuffled control
+   are recomputed on this set.
+2. **A pilot of 400 pairs instead of 200:** the first 400 pool prompts, which count toward the
+   2,000. At G's 8% positive rate, 200 pairs hold only about 16 positives, too few to estimate
+   AUC ≥ 0.70 reliably. The two 20-pair checks are unchanged.
+3. **Hard caps:** $0.20 for stage 1 and $0.60 for stage 2. The first Haiku run measured $0.0003
+   per call.
+
+Unchanged:
+- definition G, N = 2,000, weight 5
+- every pass rule
+- one primary test
