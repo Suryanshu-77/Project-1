@@ -90,6 +90,11 @@ def parse_score(text: str) -> int:
     if match is None:
         raise ValueError(f"judge reply has no JSON object: {text[:80]!r}")
     score = json.loads(match.group(0)).get("score")
+    if isinstance(score, str):  # small judges often quote it: {"score": "5"}
+        try:
+            score = float(score)
+        except ValueError:
+            pass  # left a string: rejected below
     # bool is an int subclass, so `true` would pass as 1; 4.0 is a fine way to write 4. The
     # range check comes first: int() of inf (JSON Infinity, 1e400) raises OverflowError.
     number = isinstance(score, int | float) and not isinstance(score, bool)
