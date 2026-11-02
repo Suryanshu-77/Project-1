@@ -109,22 +109,44 @@ def plot(report: Report, path: Path) -> None:
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    from matplotlib.ticker import PercentFormatter
 
-    fig, ax = plt.subplots(figsize=(7, 5), dpi=120)
+    # (color, line width, label); unknown router names keep matplotlib's defaults
+    style = {"random": ("#9AA0A6", 1.4, "random"), "rules": ("#F28E2B", 1.6, "rules only"),
+             "learned": ("#4E79A7", 1.8, "learned only"),
+             "hybrid": ("#2CA02C", 3.0, "hybrid (deployed)")}  # fmt: skip
+    fig, ax = plt.subplots(figsize=(8, 5.2), dpi=150)
     for name, result in report.routers.items():
         xs, ys = zip(*result["points"], strict=True)
-        ax.plot(xs, ys, label=name, linewidth=1.6)
+        color, width, label = style.get(name, (None, 1.6, name))
+        ax.plot(xs, ys, label=label, color=color, linewidth=width, zorder=3 if width > 2 else 2)
     cheap = report.baselines["all_cheap"]
     strong = report.baselines["all_strong"]
     ax.scatter([cheap["cost"] / strong["cost"]], [cheap["quality"] / strong["quality"]],
-               marker="o", color="black", zorder=3, label=f"all {report.cheap}")  # fmt: skip
-    ax.scatter([1.0], [1.0], marker="s", color="black", zorder=3, label=f"all {report.strong}")
-    ax.axhline(TARGET, linestyle="--", color="grey", linewidth=1)
-    ax.set_xlabel(f"cost (fraction of all-{report.strong})")
-    ax.set_ylabel(f"quality (fraction of all-{report.strong})")
-    ax.set_title(f"tierwise routers on {report.dataset} (n={report.n})")
-    ax.grid(alpha=0.3)
-    ax.legend(loc="lower right")
+               marker="o", color="#333333", zorder=4, label=f"all {report.cheap}")  # fmt: skip
+    ax.scatter([1.0], [1.0], marker="s", color="#333333", zorder=4, label=f"all {report.strong}")
+    ax.axhline(TARGET, linestyle="--", color="#9AA0A6", linewidth=1, zorder=1)
+    ax.text(0.01, TARGET, f" {TARGET:.0%} quality target", transform=ax.get_yaxis_transform(),
+            ha="left", va="top", fontsize=8.5, color="#5F6368")  # fmt: skip
+    saved = report.routers.get("hybrid", {}).get("cost_saved_at_95")
+    # the headline: where the deployed router crosses the target, unless all-cheap already
+    # reaches it (then every router "saves" the same, and the number says nothing)
+    if saved is not None and cheap["quality"] / strong["quality"] < TARGET:
+        ax.scatter([1 - saved], [TARGET], s=60, color="#2CA02C", edgecolor="white", zorder=5)
+        ax.annotate(f"deployed router: {saved:.0%} cheaper\nthan all-{report.strong}",
+                    (1 - saved, TARGET), xytext=(24, -46), textcoords="offset points",
+                    fontsize=9, color="#1B5E20",
+                    arrowprops={"arrowstyle": "-", "color": "#2CA02C"})  # fmt: skip
+    ax.xaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
+    ax.yaxis.set_major_formatter(PercentFormatter(1.0, decimals=0))
+    ax.set_xlabel(f"cost, as a share of always using {report.strong}")
+    ax.set_ylabel(f"quality, as a share of {report.strong}'s")
+    shown = {"heldout": "held-out prompts", "sprout": "SPROUT"}.get(report.dataset, report.dataset)
+    ax.set_title(f"Cost vs quality on {shown} (n={report.n:,})", loc="left",
+                 fontsize=12, fontweight="bold")  # fmt: skip
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(alpha=0.25)
+    ax.legend(loc="lower right", frameon=False, fontsize=9)
     fig.tight_layout()
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(path)
