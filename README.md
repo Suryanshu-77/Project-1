@@ -1,5 +1,10 @@
 # tierwise
 
+[![CI](https://github.com/Suryanshu-77/tierwise/actions/workflows/ci.yml/badge.svg)](https://github.com/Suryanshu-77/tierwise/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/tierwise)](https://pypi.org/project/tierwise/)
+[![Python](https://img.shields.io/pypi/pyversions/tierwise)](https://pypi.org/project/tierwise/)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](LICENSE)
+
 A self-hosted, OpenAI-compatible LLM gateway that picks the cheapest model expected to answer
 each request well, across Anthropic, OpenAI, Gemini and local Ollama models, and measures whether
 that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
@@ -8,10 +13,21 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 of its cost (random routing: 63%). Method, out-of-distribution results and limitations are in
 [BENCHMARK.md](BENCHMARK.md).
 
-Status: 0.9.0, milestones M0–M9 done: learned routing, reliability, keys and budgets,
-observability, a PyPI release, and a data flywheel that retrains the router on your own traffic.
-See [CHANGELOG.md](CHANGELOG.md).
-Design: [docs/superpowers/specs/2026-11-01-tierwise-design.md](docs/superpowers/specs/2026-11-01-tierwise-design.md)
+**Status:** 0.9.1 (beta). Learned routing, retries and failover, per-key budgets and rate
+limits, Prometheus/Grafana/OpenTelemetry, and a data flywheel that retrains the router on your
+own traffic. See [CHANGELOG.md](CHANGELOG.md) and the [design document](docs/design.md).
+
+## How a request flows
+
+```
+client (OpenAI SDK)
+  -> auth (Bearer tw-...) -> rate limit (token bucket)
+  -> route(): override tag | rules scorer | learned router  => difficulty
+  -> semantic cache lookup (opt-in)
+  -> select(): cheapest (model, effort) that clears the quality bar, cache-aware
+  -> budget reserve -> serve(): retries, circuit breakers, failover (up to 3 models)
+  -> settle actual cost -> request log, metrics, traces
+```
 
 ## Quickstart
 
@@ -34,7 +50,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://127.0.0.1:8000/v1", api_key="unused")
 reply = client.chat.completions.create(
     model="auto",              # let tierwise choose; or any id from config/registry.yaml
-    messages=[{"role": "user", "content": "Hello!"}],
+    messages=[{"role": "user", "content": "Hello"}],
     stream=False,              # stream=True works too
 )
 ```
@@ -445,7 +461,7 @@ Releases go to PyPI from a tag through
 
 1. **Once,** on pypi.org, add a *pending publisher*:
    - project `tierwise`
-   - owner `Suryanshu-77`, repository `Project-1`
+   - owner `Suryanshu-77`, repository `tierwise`
    - workflow `release.yml`, environment `pypi`
 2. **Once,** in the repository settings, create the `pypi` environment. Add yourself as a
    required reviewer so every publish waits for your approval.

@@ -13,26 +13,26 @@ Hardening, from review findings a real user could hit:
 
 ## 0.9.0: 2026-11-02
 
-**M9, the data flywheel.** The router can now learn from your own traffic.
+**The data flywheel.** The router can now learn from your own traffic.
 
 - **Sample:** opted-in routed answers go into `shadow_samples`. That needs three opt-ins: `TIERWISE_STORE_PAYLOADS`, a key created with `--allow-shadow`, and an `auto*` request. Routes the router was unsure about are sampled 5× more.
 - **Label:** `tierwise flywheel label` gets a contrast answer, then has a judge score the cheaper answer from 1 to 5, under a monthly budget. Both calls are retried, and empty, cut-off or tool-call contrast answers are never labeled.
 - **Retrain:** `python -m training.retrain` trains a challenger. It's promoted only if all of these hold: at least 20 held-out rows of both labels, zero critical misroutes on the deployed router, no more hard prompts called easy by the classifier than the champion, and at least the champion's cost saved. On a cost tie, the better AUC wins. Versions are write-once in `models/router/versions/`, and promotion is a single atomic replace of `router.json`, which names its own weights. `/healthz` reports `router_version`.
 - **CI:** a new `flywheel-e2e` job runs the whole loop against the fake upstream.
 
-## 0.8.0 — 2026-11-02
+## 0.8.0: 2026-11-02
 
-First public release. Versions track milestones: 0.8.0 is M8.
+First public release.
 
-- **M0–M1:** packaging, CI, OpenAI-compatible schema, Anthropic and OpenAI adapters, passthrough.
-- **M2:** Gemini and Ollama, streaming, model registry, cost accounting, SQLite request log.
-- **M3:** rules router, cache-aware selector, prefix affinity, `auto*` / `tier:*` models.
-- **M3.5:** reasoning effort chosen together with the model.
-- **M4:** learned router (MiniLM on ONNX + numpy classifier).
-- **M5:** eval harness, Pareto curves, `BENCHMARK.md`, critical-set CI gate.
-- **M6:** retry, failover, two-level circuit breakers, stream hold, opt-in semantic cache.
-- **M7:** API keys, rate limits, monthly budgets; Prometheus, OpenTelemetry, Grafana, docker-compose with Postgres.
-- **M8:**
+- **Gateway:** OpenAI-compatible API with Anthropic and OpenAI adapters and passthrough.
+- **Providers:** Gemini and Ollama, streaming, model registry, cost accounting, SQLite request log.
+- **Routing:** rules router, cache-aware selector, prefix affinity, `auto*` / `tier:*` models.
+- **Reasoning effort:** chosen together with the model.
+- **Learned router:** MiniLM on ONNX with a numpy classifier head.
+- **Evaluation:** eval harness, Pareto curves, `BENCHMARK.md`, critical-set CI gate.
+- **Reliability:** retry, failover, two-level circuit breakers, stream hold, opt-in semantic cache.
+- **Operations:** API keys, rate limits, monthly budgets; Prometheus, OpenTelemetry, Grafana, docker-compose with Postgres.
+- **Packaging:**
   - `pip install tierwise` works without a checkout: the registry and router artifacts ship in the wheel.
   - `tierwise fetch-model` downloads the encoder at a pinned commit and checks its sha256.
   - A cancelled request now releases its budget reservation.

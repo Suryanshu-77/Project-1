@@ -1,4 +1,4 @@
-# tierwise — Design Spec
+# tierwise: design
 
 *Cost-aware, self-hosted LLM gateway with a learned router.*
 Date: 2026-11-01 · Status: revision 6. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5). Rev 5 adds packaging, model fetch and release (§3.10, milestone M8). Rev 6 moves the flywheel's contrast call and judge offline (§5.2, milestone M9). Rev 6.1 adds the 0.9.1 hardening fixes (§5.3).
@@ -292,16 +292,7 @@ These fixes come from review findings that a real user could hit:
 | M8 | Docs, demo, PyPI release | `pip install` of the built wheel serves a request with the packaged registry; release workflow publishes on a tag |
 | M9 | Data flywheel: shadow sampling, offline judge, champion/challenger retrain | A challenger trained on shadow labels is promoted (or rejected) by the eval gate |
 
-## 9. Learning hand-offs (`TODO(human)`)
-- M1: the `Provider` protocol method shape
-- M3: rule weights and thresholds
-- M3.5: expanding a model into its (model, effort) options: effective quality and thinking cost per level
-- M4: the confidence-escalation policy
-- M6: failover candidate ordering
-- M9a: the shadow sample rate as a function of router confidence
-- M9b: the champion/challenger promotion rule
-
-## 10. Open items (resolved during build, not blocking)
+## 9. Open items (resolved during build, not blocking)
 - Current prices and context windows for each model: verify against provider docs when writing `registry.yaml`.
 - Effort controls (M3.5): confirm the OpenAI `reasoning_effort` levels and the Gemini `thinkingLevel` values per model against the official API references when writing each model's `efforts` block. Third-party sources disagree; for example, Gemini Pro accepts only `low`/`high` while Flash also accepts `minimal`/`medium`.
 - Dataset availability and licenses for training and eval: verify at the start of M4. Fallback is a self-labeled set of about 500 prompts judged by a flagship model.
