@@ -19,9 +19,11 @@ from tierwise.costs import cost_usd
 from tierwise.providers.base import Provider, ProviderError
 from tierwise.registry import ModelSpec, Registry
 from tierwise.reliability.retry import RetryPolicy, with_retries
+from tierwise.router.router import required_caps
 from tierwise.schema import ChatRequest, ChatResponse, Message
+from tierwise.selector import fits
 from tierwise.store import RequestLog, ShadowSample
-from tierwise.tokens import text_of
+from tierwise.tokens import estimate_output, estimate_tokens, text_of
 
 JUDGE_MARKER = "tierwise-judge-v1"
 GOOD_ENOUGH = 4  # a cheaper answer scored below this needs a strong model
@@ -42,14 +44,29 @@ class LabelRun:
     stopped_by_budget: bool
 
 
-def contrast_for(routed: ModelSpec, registry: Registry, providers: set[str]) -> ModelSpec | None:
-    """The flagship (baseline) for an answer from a cheaper model; the cheapest basic model for
-    an answer from the flagship. None when that model's provider isn't configured."""
-    if routed.id != registry.baseline_model and routed.tier != "flagship":
+def contrast_for(
+    routed: ModelSpec, request: ChatRequest, registry: Registry, providers: set[str]
+) -> ModelSpec | None:
+    """The model whose answer the routed one is compared with (spec §5.2, §5.3).
+
+    `baseline_model` when another model answered; the cheapest `basic` model when the baseline
+    answered. Either way it must be configured (its provider in `providers`) and able to serve
+    `request` (`fits`). None when nothing qualifies: the sample then fails before any paid call.
+    """
+    caps = required_caps(request)
+    tokens = estimate_tokens(request) + estimate_output(request)
+    
+    if routed.id != registry.baseline_model:
         baseline = registry.get(registry.baseline_model)
-        return baseline if baseline is not None and baseline.provider in providers else None
-    basic = [m for m in registry.models if m.tier == "basic" and m.provider in providers]
-    return min(basic, key=lambda m: (m.price_in + m.price_out, m.id), default=None)
+        if baseline and baseline.provider in providers and fits(baseline, caps, tokens):
+            return baseline
+        return None
+        
+    candidates = [
+        m for m in registry.models 
+        if m.tier == "basic" and m.provider in providers and fits(m, caps, tokens)
+    ]
+    return min(candidates, key=lambda m: (m.price_in + m.price_out, m.id), default=None)
 
 
 def _transcript(request: ChatRequest) -> str:
@@ -99,10 +116,10 @@ async def _label(
         routed = registry.get(sample.routed_model)
         if routed is None:
             raise ValueError(f"model {sample.routed_model!r} is no longer in the registry")
-        contrast = contrast_for(routed, registry, set(providers))
-        if contrast is None:
-            raise ValueError(f"no configured contrast model for {routed.id!r}")
         request = ChatRequest.model_validate_json(sample.request_json)
+        contrast = contrast_for(routed, request, registry, set(providers))
+        if contrast is None:
+            raise ValueError(f"no configured contrast model can serve this {routed.id!r} sample")
         reply, cost = await _ask(providers[contrast.provider], contrast, request, policy)
         spent += cost
         contrast_answer = reply.content or ""

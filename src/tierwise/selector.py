@@ -71,6 +71,11 @@ def estimated_cost(
     return total / 1_000_000
 
 
+def fits(model: ModelSpec, caps: frozenset[str], tokens: int) -> bool:
+    """Whether a model can serve a request at all: every needed capability, and the context."""
+    return caps <= model.caps and tokens <= model.context
+
+
 def select(
     result: RoutingResult,
     registry: Registry,
@@ -85,15 +90,14 @@ def select(
     prompt_hash = boundaries[-1][0] if boundaries else None
     earlier = boundaries[:-1]  # the new last message can't be cached yet
 
-    fits = [
+    candidates = [
         m
         for m in registry.models
         if m.provider in available_providers
-        and result.required_caps <= m.caps
-        and est_input + est_output <= m.context
+        and fits(m, result.required_caps, est_input + est_output)
         and (target.kind != "tier" or m.tier == target.tier)
     ]
-    if not fits:
+    if not candidates:
         needs = ", ".join(sorted(result.required_caps)) or "none"
         scope = f" in tier '{target.tier}'" if target.kind == "tier" else ""
         raise NoEligibleModel(
@@ -102,7 +106,7 @@ def select(
         )
 
     if req.reasoning_effort is not None:  # the client's effort always wins
-        options = [o for m in fits if (o := forced(m, req.reasoning_effort)) is not None]
+        options = [o for m in candidates if (o := forced(m, req.reasoning_effort)) is not None]
         if not options:
             scope = f" in tier '{target.tier}'" if target.kind == "tier" else ""
             raise NoEligibleModel(
@@ -110,7 +114,7 @@ def select(
                 f"'{req.reasoning_effort}' for this request."
             )
     else:
-        options = [o for m in fits for o in expand(m)]
+        options = [o for m in candidates for o in expand(m)]
 
     cost: dict[int, float] = {}
     warm_tokens: dict[int, int] = {}
