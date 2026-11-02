@@ -10,7 +10,7 @@ from pathlib import Path
 import httpx
 import uvicorn
 
-from tierwise import fetch, flywheel
+from tierwise import __version__, fetch, flywheel
 from tierwise.api.app import LIMITS, TIMEOUT, build_providers, create_app
 from tierwise.budgets import month_of
 from tierwise.config import CACHE_ROUTER_DIR, Settings, registry_file
@@ -35,6 +35,7 @@ def _budget(value: str) -> float:
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="tierwise")
+    parser.add_argument("--version", action="version", version=f"tierwise {__version__}")
     commands = parser.add_subparsers(dest="command")
     commands.add_parser("serve", help="run the gateway (the default)")
     keys = commands.add_parser("keys", help="manage gateway API keys").add_subparsers(
