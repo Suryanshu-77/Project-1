@@ -145,7 +145,8 @@ async def test_clients_are_pooled_singletons() -> None:
 async def test_healthz_lists_configured_providers() -> None:
     async with gateway(openai_api_key=None, ollama_base_url=None) as (_, client):
         resp = await client.get("/healthz")
-    assert resp.json() == {"status": "ok", "providers": ["anthropic", "gemini"]}
+    assert resp.json() == {"status": "ok", "providers": ["anthropic", "gemini"],
+                           "router_version": "rules-only"}  # fmt: skip
 
 
 async def test_unexpected_provider_exception_is_500_shape_and_logged(tmp_path: Path) -> None:
@@ -159,3 +160,8 @@ async def test_unexpected_provider_exception_is_500_shape_and_logged(tmp_path: P
     assert resp.json()["error"]["code"] == "internal_error"
     [row] = await app.state.log.fetch_all()
     assert (row.status, row.error_code) == (500, "internal_error")
+
+
+async def test_healthz_reports_router_version() -> None:
+    async with gateway() as (_, client):  # learned_router=False in the test gateway
+        assert (await client.get("/healthz")).json()["router_version"] == "rules-only"

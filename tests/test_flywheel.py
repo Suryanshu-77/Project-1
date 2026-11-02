@@ -16,7 +16,7 @@ from tierwise.registry import ModelSpec, Registry
 from tierwise.reliability.retry import RetryPolicy
 from tierwise.store import RequestLog, ShadowSample
 
-NOV = 1793577600.0  # 2026-11-03 UTC
+NOV = 1793577600.0  # 2026-11-02T00:00:00Z
 
 
 def _spec(model_id: str, tier: str, price: float) -> ModelSpec:

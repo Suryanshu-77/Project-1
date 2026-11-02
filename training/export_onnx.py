@@ -10,7 +10,8 @@ from pathlib import Path
 import torch
 from transformers import AutoModel, AutoTokenizer
 
-ENCODER = "sentence-transformers/all-MiniLM-L6-v2"
+from training import ENCODER
+
 INPUTS = ("input_ids", "attention_mask", "token_type_ids")
 
 

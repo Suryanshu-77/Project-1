@@ -8,8 +8,9 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 of its cost (random routing: 63%). Method, out-of-distribution results and limitations are in
 [BENCHMARK.md](BENCHMARK.md).
 
-Status: 0.8.0, milestones M0–M8 done: learned routing, reliability, keys and budgets,
-observability and a PyPI release. M9, the data flywheel, is next. See [CHANGELOG.md](CHANGELOG.md).
+Status: 0.9.0, milestones M0–M9 done: learned routing, reliability, keys and budgets,
+observability, a PyPI release, and a data flywheel that retrains the router on your own traffic.
+See [CHANGELOG.md](CHANGELOG.md).
 Design: [docs/superpowers/specs/2026-11-01-tierwise-design.md](docs/superpowers/specs/2026-11-01-tierwise-design.md)
 
 ## Quickstart
@@ -268,12 +269,54 @@ For each sample:
    strong model**, the same rule the original training labels used.
 
 Each label is two paid calls. The run stops at `TIERWISE_SHADOW_BUDGET_USD` (default $5) per
-calendar month, counting earlier runs. Against the compose stack's fake upstream it costs
-nothing: its fake judge scores hard-looking prompts 2 and easy ones 5.
+calendar month, counting earlier runs. The run can go over the budget by at most one sample.
+The compose stack's fake upstream answers for free; its made-up prices still count against
+the budget. Its fake judge scores hard-looking prompts 2 and easy ones 5.
 
 **Privacy:** samples store prompts and answers in your database, which is why collection
 needs three opt-ins. There is no purge command yet; delete rows from `shadow_samples`
 directly if you need to.
+
+**3. Retrain and gate (offline).** Needs the encoder (`tierwise fetch-model`):
+
+```bash
+uv sync --group retrain
+uv run python -m training.retrain           # add --dry-run to gate without promoting
+```
+
+1. **Train.** Labeled samples are split by prompt hash, as the original data was, so no prompt
+   is in both training and test. They are merged with `training/data` if it's there, and a
+   **challenger** is trained.
+2. **Score.** The current router (the **champion**) and the challenger are scored on the same
+   held-out rows:
+   - the cost saved at 95% of flagship quality
+   - critical misroutes: the 10 labeled hard prompts in `tests/router/labeled_prompts.jsonl`
+     that the deployed router would send to a basic model, counted through the gateway's own
+     `route()` and `select()`
+3. **Gate.** The challenger is promoted only if all of these hold:
+   - the held-out set has **at least 20 rows of both labels**
+   - **zero critical misroutes**. The rules can only raise difficulty, so this is a floor the
+     rules guarantee.
+   - its classifier alone calls **no more** hard prompts easy than the champion's does
+   - it has **at least the champion's cost saved**
+
+   On a tie, the better AUC wins, so re-running with no new labels changes nothing.
+4. **Version.** Every challenger is kept, write-once, in `models/router/versions/<UTC
+   timestamp>/`. Its `router.json` names its own weights. Promoting is a single atomic
+   replace of the router dir's `router.json`, so weights and threshold always switch
+   together. A champion that isn't in `versions/` yet is archived first, as
+   `versions/initial-<hash>/`. Restart the gateway to load the new router; `/healthz` shows
+   `router_version`.
+
+To switch to any version (to roll back, or forward), copy `versions/<id>/router.json` over the
+router dir's `router.json` and restart.
+
+**Labels from the fake judge** only know a few keywords, so a challenger trained on them
+usually overfits and the gate rejects it. `scripts/flywheel_e2e.py` shows exactly that, then
+checks the version switch above. Real gains need a real judge model.
+
+`scripts/flywheel_e2e.py` runs the whole loop (sample, label, retrain, gate, switch version)
+against the fake upstream. CI runs it on every push.
 
 ## Run the full stack
 

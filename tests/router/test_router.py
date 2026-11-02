@@ -207,3 +207,22 @@ async def test_rules_can_raise_learned_difficulty_never_lower() -> None:
     assert result.decision.signals["p_strong"] == 0.02
     high = await route(req, FakeLearned())  # type: ignore[arg-type]
     assert high.decision is not None and high.decision.difficulty == 0.8
+
+
+def test_router_json_names_its_weights(tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+    real = Path(__file__).parents[2] / "models" / "router"
+    if not (real / "model.onnx").exists():
+        pytest.skip("run training.export_onnx first")
+    for name in ("model.onnx", "tokenizer.json", "classifier.npz"):
+        (tmp_path / name).write_bytes((real / name).read_bytes())
+    config = json.loads((real / "router.json").read_text())
+    (tmp_path / "router.json").write_text(json.dumps({**config, "version": "v2",
+                                                      "weights": "versions/v2/classifier.npz"}))
+    assert load_learned(_settings(tmp_path)) is None  # named weights missing: rules only
+    assert "versions" in caplog.text and "v2" in caplog.text
+    version_dir = tmp_path / "versions" / "v2"
+    version_dir.mkdir(parents=True)
+    (version_dir / "classifier.npz").write_bytes((real / "classifier.npz").read_bytes())
+    learned = load_learned(_settings(tmp_path))
+    assert learned is not None and learned.version == "v2"
+    learned.close()
