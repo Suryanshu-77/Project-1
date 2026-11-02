@@ -83,7 +83,7 @@ Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama. Scripts and ste
 | Labels added | Rate | Saved @ 99% | ROC-AUC vs SPROUT verdict | Δ vs none [95% interval] | Wins |
 |---|---|---|---|---|---|
 | none | n/a | 42.6% | 0.670 | n/a | n/a |
-| **judge `score < 4`, once (the shipped rule)** | 31% | **53.4%** | **0.693** | **+10.4 [+0.3, +21.2]** | **294/300** |
+| **judge `score < 4`, once (0.9's rule)** | 31% | **53.4%** | **0.693** | **+10.4 [+0.3, +21.2]** | **294/300** |
 | judge `score < 4`, 10× weight | 31% | 59.7% | 0.698 | +18.5 [+5.2, +33.8] | 297/300 |
 | judge `score < 3`, once | 8% | 40.8% | 0.659 | +0.0 [−9.1, +10.4] | 147/300 |
 | judge `score < 3`, 10× weight | 8% | 50.6% | 0.658 | +7.6 [−5.0, +20.3] | 269/300 |
@@ -93,15 +93,31 @@ Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama. Scripts and ste
 
 ROC-AUC here is a different measure from the AUC column above. It is the chance that a prompt SPROUT says needs the strong model (cheap < 0.5 ≤ strong) scores above one that doesn't.
 
-**What it shows:**
-- **The shipped rule helps.** About 400 labels from a free 7B judge raise cost saved at 99% by about 10 points. Without them the refit saves 42.6%, with them 53.4%.
-- **Treat the 10× row as exploratory.** It was chosen after the data was seen. The 400 labels are 2% of the training set, so weighting them up is the obvious next lever.
-- **SPROUT's own binary verdict helps less than the judge's labels.** At 7% positives it gives the classifier about 40 hard examples. `score < 4` also marks prompts where the cheap answer was only somewhat worse, and those are what decide the order at a 99% target.
-- **The judge is weak as a detector.** It agreed with SPROUT's verdict on 69% of prompts, and gave a 5 to 18 of the 49 prompts SPROUT says truly needed the strong model.
+**What later checks showed: this run can't tell whether the flywheel helps.**
+- **The +10.4 isn't robust.** On the 401 prompts whose answer pairs were stored, mistral's labels give **+4.3 [−4.5, +12.8]**, which isn't significant. The +10.4 needed 175 recovered labels, mostly "the cheap answer was fine".
+- **A stronger judge made the router worse.** Claude Haiku 5.5 re-judged the stored pairs for $0.15. It called 83% of them "needs strong", and its labels cut cost saved by **18.7 points [−30.1, −9.3]**. That doesn't mean it judged badly. A label belongs to one model pair: these compare qwen2.5:1.5b with qwen2.5:7b, a gap Haiku saw clearly, while the eval asks whether *gpt-4o-mini* falls short of *gpt-4o*.
+- **So the labels and the eval describe different model pairs.** Mistral's lenient labels happened to suit the gpt-4o pair better.
 
-**Caveats:**
-- **One traffic source:** the labeled prompts and the eval prompts both come from SPROUT. Part of the gain may simply come from the prompts being in-domain. SPROUT's own labels not helping argues against that, but doesn't rule it out.
-- **Uncorrected comparisons:** seven setups are compared against the baseline, with no correction for multiple comparisons.
+### The same-pair test (pre-registered)
+
+[`PROTOCOL.md`](experiments/flywheel_local/PROTOCOL.md) fixed every rule before its runs.
+- **Labels:** Claude Haiku judges SPROUT's own gpt-4o-mini vs gpt-4o answer texts, the pair the eval scores.
+- **Prompts:** labels come from SPROUT's train split. The eval uses the test split, halved: one half to choose a setup, the other to test it once.
+- **Controls:** every comparison is checked against the same prompts with shuffled labels, and against a 5-seed retraining noise band.
+
+| Stage | Cost | Result |
+|---|---|---|
+| **0: can perfect labels help?** SPROUT's own verdicts, 500 / 1,000 / 2,000 prompts, added once or ×5 | $0 | Only at **2,000 ×5**: +12.9 [+1.5, +27.7] (G) and +17.5 [+3.5, +33.3] (S). Added once, even 2,000 perfect labels don't clear the noise. |
+| **1: does Haiku judge like SPROUT?** 400 pairs, plus two 20-pair checks | $0.16 | AUC **0.897** against SPROUT's verdict, and order flips agree (18/20). But identical answers scored 4 or more only **14/20** (18 needed), so **NO-GO**: stage 2 wasn't run. |
+
+**Why the identical-answer check failed:**
+- **What happened:** in 5 of the 6 misses, SPROUT says gpt-4o's answer was itself wrong, and Haiku scored the "cheaper" copy 1.
+- **The flaw it exposed:** labels from a judge that scores only the cheaper answer call prompts that *both* models fail "needs strong", so the router learns to pay for the flagship where it buys nothing.
+- **The fix, in 0.10:** the judge scores both answers, and a prompt needs the strong model only when the cheaper answer falls short and the stronger one doesn't.
+
+Rerunning stage 1 and stage 2 under that rule is the next step. It is about 2,000 judge calls (about ₹80 at this run's measured rate).
+
+**Spent in all:** ₹33.79 (about $0.31), through AICredits.
 
 ## Limitations
 

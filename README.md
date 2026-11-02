@@ -11,14 +11,15 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 
 - **Benchmark:** on 3,943 held-out prompts, tierwise's router keeps 95% of GPT-4's quality at
   44% of its cost (random routing: 63%).
-- **Data flywheel:** in a $0 local run, about 400 labels from a free 7B judge raised the cost
-  saved at 99% quality by 10 points. The router retrains on your own traffic, behind a
-  champion/challenger gate.
+- **Data flywheel:** the router retrains on labels from your own traffic, behind a
+  champion/challenger gate. A pre-registered test found that labels help only when they describe
+  the same model pair the router serves, and that a judge scoring just the cheaper answer
+  mislabels prompts both models fail. 0.10 fixes the second.
 - **Method, out-of-distribution results and limitations:** [BENCHMARK.md](BENCHMARK.md).
 
 ![The tierwise Grafana dashboard under 15 minutes of mixed demo traffic](docs/benchmark/dashboard.png)
 
-**Status:** 0.9.2 (beta). Learned routing, retries and failover, per-key budgets and rate
+**Status:** 0.10.0 (beta). Learned routing, retries and failover, per-key budgets and rate
 limits, Prometheus/Grafana/OpenTelemetry, and a data flywheel that retrains the router on your
 own traffic. See [CHANGELOG.md](CHANGELOG.md) and the [design document](docs/design.md).
 
@@ -286,8 +287,9 @@ For each sample:
 1. A contrast model answers the same request. That is the flagship (`baseline_model`) if a
    cheaper model answered, otherwise the cheapest basic model.
 2. A judge model (`TIERWISE_JUDGE_MODEL`, default the baseline model) sees both answers, in a
-   random order, and scores the cheaper one from 1 to 5. Below 4 means the prompt **needs a
-   strong model**, the same rule the original training labels used.
+   random order, and scores each from 1 to 5 on its own merits. The prompt **needs a strong
+   model** when the cheaper answer scores below 4 and the stronger one 4 or more. A prompt both
+   models fail gains nothing from the flagship, so it isn't labeled "needs strong".
 
 Each label is two paid calls. The run stops at `TIERWISE_SHADOW_BUDGET_USD` (default $5) per
 calendar month, counting earlier runs. The run can go over the budget by at most one sample.
