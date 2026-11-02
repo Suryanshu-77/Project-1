@@ -13,7 +13,7 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 of its cost (random routing: 63%). Method, out-of-distribution results and limitations are in
 [BENCHMARK.md](BENCHMARK.md).
 
-**Status:** 0.9.1 (beta). Learned routing, retries and failover, per-key budgets and rate
+**Status:** 0.9.2 (beta). Learned routing, retries and failover, per-key budgets and rate
 limits, Prometheus/Grafana/OpenTelemetry, and a data flywheel that retrains the router on your
 own traffic. See [CHANGELOG.md](CHANGELOG.md) and the [design document](docs/design.md).
 

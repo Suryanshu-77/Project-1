@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.9.2: 2026-11-03
+
+Found by the first real-model flywheel run (local Ollama; results in `BENCHMARK.md`):
+
+- **The judge's score:** a quoted number such as `{"score": "5"}` now counts, under the same rules as an unquoted one. mistral:7b quoted 216 of 744 scores, and dropping them skewed the labels toward "needs strong".
+- **The gate:** cost saved is measured at a quality target set from the eval rows, closing half the gap between all-cheap and all-strong, and never below 95%. On easy traffic a fixed 95% let perfect, random and constant routers tie. The `GateResult.cost_saved_95` field is now `cost_saved`, plus a `target` field, and `metrics.json` changes to match.
+
 ## 0.9.1: 2026-11-02
 
 Hardening, from review findings a real user could hit:
