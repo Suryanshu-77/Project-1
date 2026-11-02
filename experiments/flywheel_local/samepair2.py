@@ -170,8 +170,8 @@ def pilot(dry_run: bool) -> None:
     for name, (value, ok) in checks.items():
         print(f"  {'ok  ' if ok else 'FAIL'} {name}: {value}")
     print(f"\ndecision: {'GO to stage 2' if go else 'NO-GO: stop, stage 2 is not run'}")
-    out = {"checks": {k: [v, ok] for k, (v, ok) in checks.items()}, "auc": auc, "rate": rate,
-           "g_rate": float(y.mean()), "unscored": unscored, "go": go}  # fmt: skip
+    out = {"checks": {k: [v, bool(ok)] for k, (v, ok) in checks.items()}, "auc": auc, "rate": rate,
+           "g_rate": float(y.mean()), "unscored": unscored, "go": bool(go)}  # fmt: skip
     (HERE / "stage1_v2_results.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
 
 
