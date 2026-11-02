@@ -12,3 +12,8 @@ build/
 *.egg-info/
 models/router/model.onnx
 training/data/
+
+# Internal working notes (kept locally, not published)
+docs/superpowers/
+docs/HANDOFF.md
+docs/SESSION-*.md

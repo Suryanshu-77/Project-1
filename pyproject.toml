@@ -36,9 +36,9 @@ dependencies = [
 ]
 
 [project.urls]
-Repository = "https://github.com/Suryanshu-77/Project-1"
-Benchmark = "https://github.com/Suryanshu-77/Project-1/blob/main/BENCHMARK.md"
-Changelog = "https://github.com/Suryanshu-77/Project-1/blob/main/CHANGELOG.md"
+Repository = "https://github.com/Suryanshu-77/tierwise"
+Benchmark = "https://github.com/Suryanshu-77/tierwise/blob/main/BENCHMARK.md"
+Changelog = "https://github.com/Suryanshu-77/tierwise/blob/main/CHANGELOG.md"
 
 [project.scripts]
 tierwise = "tierwise.__main__:main"

@@ -19,8 +19,8 @@ Each prompt has an answer from a **cheap** and a **strong** model, with a known 
 
 **The routers:**
 - **random:** a uniform random score, seed 0.
-- **rules:** the M3 rules scorer.
-- **learned:** the M4 classifier's raw P(strong model needed).
+- **rules:** the rules scorer.
+- **learned:** the learned classifier's raw P(strong model needed).
 - **hybrid:** what the gateway actually runs: `route()` with rules first, the learned router when rules are unsure, and difficulty = max(rules, learned).
 
 **Metrics:**
@@ -62,13 +62,13 @@ All-Mixtral already reaches 85.6% of GPT-4's quality at 2.7% of its cost.
 ## The deployed hybrid
 
 - **Who decides:** the rules router decides alone only when it is confident (confidence ≥ 0.8). On every other prompt the learned classifier decides, and rules can only raise its difficulty.
-- **The max rule:** this was added in M5 after the critical-set gate caught the classifier sending 4 of 10 labeled hard prompts (a proof, a derivation, an architecture design and a legal review) to basic-tier models. The rule costs 4 points on the held-out headline (60.0% → 56.0%), and it brings the out-of-distribution result closer to the rules router.
+- **The max rule:** this was added after the critical-set gate caught the classifier sending 4 of 10 labeled hard prompts (a proof, a derivation, an architecture design and a legal review) to basic-tier models. The rule costs 4 points on the held-out headline (60.0% → 56.0%), and it brings the out-of-distribution result closer to the rules router.
 - **Low confidence:** 42.0% of held-out prompts (61.6% on SPROUT) get a decision with confidence below 0.3, so the gateway raises their quality bar one step. That comes from `to_decision` measuring distance from a low threshold (0.15) in probability space. It is a deliberate upward bias, and the next thing to tune when real traffic exists.
 
 ## Limitations
 
-- **Older model pairs.** Neither dataset contains tierwise's registry models (Claude 5.5, GPT-5.x, Gemini 3). The benchmark measures how well the router *ranks* prompts by how much they need a strong model, and that ranking is what carries over. The registry's `quality` values stay uncalibrated placeholders until M9's shadow labels exist for current models.
-- **Two models, single-turn.** The gateway chooses among many models and caches multi-turn prefixes, and neither shows up here. Cache-aware selection is covered by the M3 tests instead.
+- **Older model pairs.** Neither dataset contains tierwise's registry models (Claude 5.5, GPT-5.x, Gemini 3). The benchmark measures how well the router *ranks* prompts by how much they need a strong model, and that ranking is what carries over. The registry's `quality` values stay uncalibrated placeholders until flywheel labels exist for current models.
+- **Two models, single-turn.** The gateway chooses among many models and caches multi-turn prefixes, and neither shows up here. Cache-aware selection is covered by the selector tests instead.
 - **Judge-based quality.** Both datasets grade answers with an LLM judge, and the held-out set assumes GPT-4's answer is always right.
 - **SPROUT's license is unstated.** It is used for aggregate numbers only.
 
