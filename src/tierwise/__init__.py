@@ -1,3 +1,5 @@
 """tierwise: cost-aware, self-hosted LLM gateway with a learned router."""
 
-__version__ = "0.1.0"
+from importlib.metadata import version
+
+__version__ = version("tierwise")  # pyproject.toml is the one place the version lives

@@ -2,6 +2,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import AliasChoices
 
 from tierwise import config
 from tierwise.api.app import create_app
@@ -61,3 +62,11 @@ print(config.CACHE_ROUTER_DIR)
     result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-400:]
     assert result.stdout.strip().startswith(tempfile.gettempdir())
+
+
+def test_env_example_documents_every_setting() -> None:
+    documented = (Path(__file__).parents[1] / ".env.example").read_text(encoding="utf-8")
+    for name, field in Settings.model_fields.items():
+        alias = field.validation_alias
+        env = alias.choices[0] if isinstance(alias, AliasChoices) else name.upper()
+        assert f"{env}=" in documented, f"{env} is missing from .env.example"

@@ -44,7 +44,7 @@ Postgres store tests are skipped unless `TIERWISE_TEST_PG_URL` points at a runni
 - **Tests first.** A bug fix comes with a test that fails without it.
 - **No real API calls in tests.** Use the fake upstream in `scripts/fake_upstream.py`.
 - **Routing changes need evidence.** If a change can move routing decisions, re-run the
-  evaluation (`uv run python -m evaluation.run_eval`) and report the before and after numbers
+  evaluation ([BENCHMARK.md, "Reproduce"](BENCHMARK.md#reproduce)) and report the before and after numbers
   in the pull request. The critical-set gate must still pass.
 - **Benchmark claims need reproducible steps,** in `BENCHMARK.md` or under `experiments/`.
 - **Changelog.** User-visible changes get a line in `CHANGELOG.md`.

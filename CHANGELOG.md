@@ -7,6 +7,9 @@
 - **The flywheel experiment** is reproducible from `experiments/flywheel_local/`.
 - **Benchmark charts:** restyled. The deployed router's operating point is marked.
 - **CI:** actions moved to Node 24.
+- **Version:** `tierwise.__version__` and the OpenAPI schema reported 0.1.0; both now read the installed package's version. New: `tierwise --version`.
+- **Typing:** the package ships `py.typed`, so type checkers use its annotations.
+- **`.env.example`:** documents every setting, including the flywheel opt-ins, host and port, the learned router and tracing. A test keeps it complete.
 
 ## 0.9.2: 2026-11-03
 
