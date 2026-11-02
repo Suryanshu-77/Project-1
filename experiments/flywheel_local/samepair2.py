@@ -4,6 +4,9 @@
     uv run --group retrain --group train python <this file> pilot [--dry-run]
     uv run --group retrain --group train python <this file> test [--dry-run]
 
+`--cut c` labels `cheap < c and strong >= 4`: 4 (default) is tierwise 0.10's needs_strong and
+PROTOCOL-2.md; 2 is PROTOCOL-3.md, which writes its own `_v3` result files.
+
 `check` (free): the analysis pipeline must reproduce stage 0's G N2000 w5 result on the dev half
 before it is trusted on the confirm set. `pilot` is stage 1, `test` is stage 2 (it refuses to run
 unless the pilot said GO). Every judgment is stored in `same_pair_v2` of flywheel.db, so a re-run
@@ -32,7 +35,7 @@ from stage0 import build_pool, gold, half, saved_at, usable  # noqa: E402
 
 from evaluation.datasets import load_sprout  # noqa: E402
 from evaluation.metrics import EvalRow  # noqa: E402
-from tierwise.flywheel import _transcript, judge_messages, needs_strong, parse_scores  # noqa: E402
+from tierwise.flywheel import GOOD_ENOUGH, _transcript, judge_messages, parse_scores  # noqa: E402
 from tierwise.providers.base import ProviderError  # noqa: E402
 from tierwise.providers.openai import OpenAIProvider  # noqa: E402
 from tierwise.reliability.retry import RetryPolicy, with_retries  # noqa: E402
@@ -49,6 +52,16 @@ MAX_UNSCORED = 0.05
 DB = HERE / "flywheel.db"
 SHIPPED = REPO / "models" / "router"
 Job = tuple[str, str, str, str, str]  # key, prompt, cheap answer, strong answer, seed
+CUT = 4  # set by --cut
+
+
+def needs_strong(cheap: int, strong: int) -> bool:
+    """The label under test: with CUT = 4 exactly tierwise.flywheel.needs_strong."""
+    return cheap < CUT and strong >= GOOD_ENOUGH
+
+
+def results(stage: int) -> Path:
+    return HERE / f"stage{stage}_{'v2' if CUT == 4 else 'v3'}_results.json"
 
 
 def table(db: sqlite3.Connection) -> None:
@@ -172,7 +185,7 @@ def pilot(dry_run: bool) -> None:
     print(f"\ndecision: {'GO to stage 2' if go else 'NO-GO: stop, stage 2 is not run'}")
     out = {"checks": {k: [v, bool(ok)] for k, (v, ok) in checks.items()}, "auc": auc, "rate": rate,
            "g_rate": float(y.mean()), "unscored": unscored, "go": bool(go)}  # fmt: skip
-    (HERE / "stage1_v2_results.json").write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
+    results(1).write_text(json.dumps(out, indent=2) + "\n", encoding="utf-8")
 
 
 def compare(name: str, rows: list[EvalRow], x_eval: np.ndarray, x_add: np.ndarray,
@@ -267,9 +280,9 @@ def confirm_set(train_rows: list[EvalRow], test_rows: list[EvalRow], pool: list[
 
 
 def test(dry_run: bool) -> None:
-    result = HERE / "stage1_v2_results.json"
+    result = results(1)
     if not dry_run and not (result.exists() and json.loads(result.read_text())["go"]):
-        raise SystemExit("stage 2 runs only after a GO from the pilot (stage1_v2_results.json)")
+        raise SystemExit(f"stage 2 runs only after a GO from the pilot ({result.name})")
     train_rows, test_rows = (load_sprout(s)[0] for s in ("train", "test"))
     pool, exclude, _ = build_pool(train_rows, test_rows)
     texts = answers(pool)
@@ -299,14 +312,17 @@ def test(dry_run: bool) -> None:
     x_pool = np.load(HERE / "stage0_cache.npz")["pool"][scored]
     print(f"labels: {len(scored)} scored ({unscored} unscored); Haiku rate {haiku.mean():.1%}, "
           f"G rate {g.mean():.1%}, agreement {np.mean(haiku == g):.1%}")  # fmt: skip
-    out = compare("confirm set (the primary test)", rows, x_eval, x_pool,
-                  {"haiku (primary)": haiku, "G (ceiling)": g})  # fmt: skip
+    sets = {"haiku (primary)": haiku, "G (ceiling)": g}
+    if CUT != 4:  # reported for comparison only: the shipped cut on the same judgments
+        shipped = (got[f"label:{pid(pool[i].prompt)}"] for i in scored)
+        sets["haiku cut 4"] = np.array([c < 4 <= s for c, s in shipped], int)
+    out = compare("confirm set (the primary test)", rows, x_eval, x_pool, sets)
     verdict = "SUCCESS" if out["haiku (primary)"]["pass"] else "NOT SUPPORTED"
     print(f"\nprimary test: {verdict}")
     agreement = float(np.mean(haiku == g))
     out_json = {"scored": len(scored), "unscored": unscored, "agreement": agreement,
                 "results": out, "verdict": verdict}  # fmt: skip
-    (HERE / "stage2_v2_results.json").write_text(json.dumps(out_json, indent=2) + "\n",
+    results(2).write_text(json.dumps(out_json, indent=2) + "\n",
                                                  encoding="utf-8")  # fmt: skip
 
 
@@ -314,7 +330,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("stage", choices=["check", "pilot", "test"])
     parser.add_argument("--dry-run", action="store_true", help="build the calls, make none")
+    parser.add_argument("--cut", type=int, default=4, choices=[2, 3, 4],
+                        help="needs strong = cheap < cut and strong >= 4")  # fmt: skip
     args = parser.parse_args()
+    global CUT
+    CUT = args.cut
     if args.stage == "check":
         check()
     elif args.stage == "pilot":

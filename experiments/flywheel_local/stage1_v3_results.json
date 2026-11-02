@@ -1,0 +1,37 @@
+{
+  "checks": {
+    "identical: needs_strong never fires (>= 19/20)": [
+      20,
+      true
+    ],
+    "identical: equal scores (>= 18/20)": [
+      20,
+      true
+    ],
+    "flip: same label (>= 17/20)": [
+      20,
+      true
+    ],
+    "flip: each score within 1 (>= 17/20)": [
+      20,
+      true
+    ],
+    "gap AUC vs SPROUT's G (>= 0.70)": [
+      0.914,
+      true
+    ],
+    "label rate 4.5% within 0.5-2x of G's 6.5%": [
+      0.045,
+      true
+    ],
+    "unscored calls 0/440 (<= 5%)": [
+      0,
+      true
+    ]
+  },
+  "auc": 0.914284245166598,
+  "rate": 0.045,
+  "g_rate": 0.065,
+  "unscored": 0,
+  "go": true
+}
