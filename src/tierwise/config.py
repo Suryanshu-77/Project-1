@@ -1,5 +1,6 @@
 """Gateway settings, read from the environment (and an optional .env file)."""
 
+import tempfile
 from importlib.resources import files
 from importlib.resources.abc import Traversable
 from pathlib import Path
@@ -79,7 +80,16 @@ class Settings(BaseSettings):
     port: int = Field(default=8000, validation_alias=AliasChoices("TIERWISE_PORT", "port"))
 
 
-CACHE_ROUTER_DIR = Path.home() / ".cache" / "tierwise" / "router"  # where fetch-model writes
+def _home() -> Path:
+    """The home directory, or the temp dir where there is none (an arbitrary container uid
+    with no passwd entry and no HOME): resolving a cache path must never stop the gateway."""
+    try:
+        return Path.home()
+    except RuntimeError:
+        return Path(tempfile.gettempdir())
+
+
+CACHE_ROUTER_DIR = _home() / ".cache" / "tierwise" / "router"  # where fetch-model writes
 
 
 def packaged_data() -> Traversable:

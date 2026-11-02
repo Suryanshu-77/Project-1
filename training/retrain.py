@@ -113,8 +113,12 @@ def shadow_rows(
 
 def default_embedder(router_dir: Path) -> Embed:
     """The gateway's own tokenizer, truncation and encoder: no train/serve skew."""
+    config = json.loads((router_dir / "router.json").read_text(encoding="utf-8"))
     tokenizer = load_tokenizer(router_dir / "tokenizer.json")
     encoder = OnnxEncoder(model_path(router_dir), threads=4)
+    if encoder.dim != int(config["dim"]):
+        raise ValueError(f"the encoder makes {encoder.dim}-dim vectors but router.json says "
+                         f"{config['dim']}: fetch the matching model.onnx")  # fmt: skip
     return lambda requests: _embed(encoder, tokenizer, requests)
 
 
@@ -162,15 +166,12 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
     path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
 
 
-def _new_version_dir(versions: Path, version: str) -> Path:
-    """Versions are write-once: router.json files point into them."""
+def _free_version(versions: Path, version: str) -> str:
+    """Versions are write-once (router.json files point into them): never reuse a name."""
     for suffix in ("", *(f"-{i}" for i in range(1, 100))):
-        target = versions / f"{version}{suffix}"
-        try:
-            target.mkdir(parents=True)
-            return target
-        except FileExistsError:
-            continue
+        name = f"{version}{suffix}"
+        if not (versions / name).exists() and not (versions / f"{name}.partial").exists():
+            return name
     raise RuntimeError(f"too many versions named {version}")
 
 
@@ -268,37 +269,44 @@ async def run(
         int((champion_p_critical < float(config["threshold"])).sum()),
     )  # fmt: skip
 
-    version = datetime.fromtimestamp(now(), UTC).strftime("%Y%m%dT%H%M%SZ")
-    new = _new_version_dir(router_dir / "versions", version)
-    version = new.name
-    np.savez(new / "classifier.npz", **export_weights(fitted.model))
-    challenger = Classifier.load(new / "classifier.npz", expected_dim=dim)  # score what ships
-    challenger_misroutes = await critical_misroutes(
-        critical_prompts, challenger.predict_proba(x_critical), fitted.threshold, registry
-    )
-    challenger_p_critical = challenger.predict_proba(x_critical)
-    challenger_result = evaluate_classifier(
-        challenger.predict_proba(x_eval), eval_rows, challenger_misroutes,
-        int((challenger_p_critical < fitted.threshold).sum()),
-    )  # fmt: skip
-    labels_held_out = {row.q_cheap < 0.5 for row in eval_rows}
-    if len(eval_rows) < MIN_HELD_OUT or len(labels_held_out) < 2:
-        decision, reason = False, (f"rejected: only {len(eval_rows)} held-out rows; promotion "
-                                   f"needs {MIN_HELD_OUT} with both labels")  # fmt: skip
-    else:
-        decision, reason = decide(champion_result, challenger_result)
+    versions = router_dir / "versions"
+    version = _free_version(versions, datetime.fromtimestamp(now(), UTC).strftime("%Y%m%dT%H%M%SZ"))
+    staging = versions / f"{version}.partial"  # renamed into place only once complete
+    staging.mkdir(parents=True)
+    try:
+        np.savez(staging / "classifier.npz", **export_weights(fitted.model))
+        challenger = Classifier.load(staging / "classifier.npz", expected_dim=dim)  # what ships
+        challenger_misroutes = await critical_misroutes(
+            critical_prompts, challenger.predict_proba(x_critical), fitted.threshold, registry
+        )
+        challenger_p_critical = challenger.predict_proba(x_critical)
+        challenger_result = evaluate_classifier(
+            challenger.predict_proba(x_eval), eval_rows, challenger_misroutes,
+            int((challenger_p_critical < fitted.threshold).sum()),
+        )  # fmt: skip
+        labels_held_out = {row.q_cheap < 0.5 for row in eval_rows}
+        if len(eval_rows) < MIN_HELD_OUT or len(labels_held_out) < 2:
+            decision = False
+            reason = (f"rejected: only {len(eval_rows)} held-out rows; promotion needs "
+                      f"{MIN_HELD_OUT} with both labels")  # fmt: skip
+        else:
+            decision, reason = decide(champion_result, challenger_result)
 
-    metrics = {
-        "version": version, "kind": fitted.kind, "threshold": fitted.threshold,
-        "val_auc": fitted.val_auc, "n_labels": n_labels, "n_train": len(train_y),
-        "n_eval": len(eval_rows), "decision": decision, "reason": reason,
-        "champion": asdict(champion_result), "challenger": asdict(challenger_result),
-    }  # fmt: skip
-    _write_json(new / "metrics.json", metrics)
-    _write_json(new / "router.json", {
-        **config, "threshold": fitted.threshold, "kind": fitted.kind, "version": version,
-        "weights": f"versions/{version}/classifier.npz",
-    })  # fmt: skip
+        metrics = {
+            "version": version, "kind": fitted.kind, "threshold": fitted.threshold,
+            "val_auc": fitted.val_auc, "n_labels": n_labels, "n_train": len(train_y),
+            "n_eval": len(eval_rows), "decision": decision, "reason": reason,
+            "champion": asdict(champion_result), "challenger": asdict(challenger_result),
+        }  # fmt: skip
+        _write_json(staging / "metrics.json", metrics)
+        _write_json(staging / "router.json", {
+            **config, "threshold": fitted.threshold, "kind": fitted.kind, "version": version,
+            "weights": f"versions/{version}/classifier.npz",
+        })  # fmt: skip
+        new = staging.rename(versions / version)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
 
     promoted = decision and promote
     if promoted:

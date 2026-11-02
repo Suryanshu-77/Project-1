@@ -292,11 +292,12 @@ async def _chat_completions(req: ChatRequest, request: Request) -> Response:
                 settle(0.0)  # a cache hit is free, but it still counts as a request
                 return _cached_response(hit, result, recorder, hit_spec)
 
-        def keep(content: str, finish: str, usage: Usage, spec: ModelSpec) -> None:
-            """Cache, and maybe sample for the flywheel, only complete text answers."""
+        def keep(content: str, finish: str, usage: Usage | None, spec: ModelSpec) -> None:
+            """Cache, and maybe sample for the flywheel, only complete text answers. Caching
+            also needs real usage (a hit replays it); sampling doesn't (Ollama sends none)."""
             if not content or finish != "stop":
                 return
-            if cache is not None and cache_key is not None:
+            if cache is not None and cache_key is not None and usage is not None:
                 cache.store(cache_key, CachedAnswer(content, spec.id, spec.provider, usage, finish))
             try:  # the answer is already the client's: a flywheel bug must never cost them it
                 sample(content, spec)
@@ -407,12 +408,10 @@ async def _chat_completions(req: ChatRequest, request: Request) -> Response:
                 if status == 200:
                     breakers.record(spec.provider, spec.id, None)
                     remember(spec, option)
-                    if usage is not None:
-                        text = "".join(c.content or "" for c in streamed_chunks)
-                        finishes = [c.finish_reason for c in streamed_chunks if c.finish_reason]
-                        has_tools = any(c.tool_calls for c in streamed_chunks)
-                        if not has_tools:
-                            keep(text, finishes[-1] if finishes else "", usage, spec)
+                    text = "".join(c.content or "" for c in streamed_chunks)
+                    finishes = [c.finish_reason for c in streamed_chunks if c.finish_reason]
+                    if not any(c.tool_calls for c in streamed_chunks):
+                        keep(text, finishes[-1] if finishes else "", usage, spec)
                 elif status == STATUS_UPSTREAM_FAILED_MID_STREAM:  # failed after first content
                     failure = RetryableError(spec.provider, None, code or "mid-stream failure")
                     breakers.record(spec.provider, spec.id, failure)

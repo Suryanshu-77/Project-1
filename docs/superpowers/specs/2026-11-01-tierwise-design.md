@@ -1,7 +1,7 @@
 # tierwise — Design Spec
 
 *Cost-aware, self-hosted LLM gateway with a learned router.*
-Date: 2026-11-01 · Status: revision 6. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5). Rev 5 adds packaging, model fetch and release (§3.10, milestone M8). Rev 6 moves the flywheel's contrast call and judge offline (§5.2, milestone M9).
+Date: 2026-11-01 · Status: revision 6. Rev 2 added critical-path latency, provider prompt caching, breaker granularity, stream buffering and the data flywheel. Rev 3 adds token-space truncation, non-blocking ONNX inference, pooled HTTP clients, and a queued write path. Rev 4 adds reasoning-effort selection (§3.5.1, milestone M3.5). Rev 5 adds packaging, model fetch and release (§3.10, milestone M8). Rev 6 moves the flywheel's contrast call and judge offline (§5.2, milestone M9). Rev 6.1 adds the 0.9.1 hardening fixes (§5.3).
 
 ## 1. Problem and goal
 Teams overpay by sending every request to a flagship model, or lose quality by defaulting to cheap ones. **tierwise** sits between applications and model providers and decides, per request, which model to use. It picks the **cheapest model expected to answer well enough**, and it measures whether that bet paid off.
@@ -247,6 +247,15 @@ Rev 6 moves the contrast call and the judge **offline**. The label is a property
   - **Versions.** Every challenger is written to `models/router/versions/<UTC timestamp>/`. Promotion copies it over `router_dir`, and the replaced champion is kept in `versions/`. `router.json` carries `version`, which `/healthz` reports. This replaces the registry `router_version` of §5.1. The gateway loads a new router on restart.
 - **Deferred:** the registry-drift raised rate, hot reload of the router, and a payload purge command. Samples contain prompts, which is why collection needs three opt-ins.
 - **Exit check.** `scripts/flywheel_e2e.py` runs in CI against the fake upstream, whose fake judge scores hard-looking prompts 2 and easy ones 5. It sends traffic with a shadow key, then labels, retrains and gates. It passes when the gate prints a decision with its reasons, and `router_dir` changes if and only if the decision was to promote.
+
+### 5.3 Hardening (0.9.1)
+These fixes come from review findings that a real user could hit:
+- **Contrast model.** It must be able to serve the stored request, using the selector's own capability and context check. It is `baseline_model` when a cheaper, non-flagship model answered, and the cheapest fitting `basic` model when any flagship answered: a flagship is the strong side of the label. A sample with no fitting contrast model fails before any paid call.
+- **Sampling.** A stream that ends normally is sampled even without a usage chunk; Ollama never sends one. Caching still needs real usage.
+- **Startup.** It never fails because the home directory can't be resolved (containers running under an arbitrary user ID).
+- **Retrain.** A version folder appears only once complete. Retrain checks the encoder's dimension against `router.json`.
+- **`fetch-model`.** It stops a download that grows past the pinned size.
+- **The judge's score.** It must be a real integer, so `true` is rejected.
 
 ## 6. Security and privacy
 - Provider keys are read from env only and redacted in logs and traces.

@@ -89,3 +89,31 @@ async def test_sampler_bug_never_breaks_the_response(
         resp = await client.post("/v1/chat/completions", json=_ask(),
                                  headers={"Authorization": f"Bearer {key}"})  # fmt: skip
     assert resp.status_code == 200 and resp.json()["choices"][0]["message"]["content"] == "pong"
+
+
+def _no_usage_stream(request: httpx.Request) -> httpx.Response:
+    return sse(openai_chunk({"content": "Par"}), openai_chunk({"content": "is"}, "stop"))
+
+
+async def test_stream_without_usage_is_sampled_not_cached(tmp_path: Path) -> None:
+    import numpy as np
+
+    from tierwise.cache import SemanticCache
+
+    async def embed(text: str) -> np.ndarray | None:
+        return np.array([1.0, 0.0])
+
+    def ask(prompt: str) -> dict[str, Any]:
+        return {"model": "auto", "stream": True, "temperature": 0,
+                "messages": [{"role": "user", "content": f"{prompt} [easy]"}]}  # fmt: skip
+
+    async with gateway(_no_usage_stream, db_dir=tmp_path, registry=TWO, **SHADOW) as (app, client):
+        app.state.cache = SemanticCache(embed)
+        key, _ = await make_key(app, allow_shadow=True)
+        auth = {"Authorization": f"Bearer {key}"}
+        resp = await client.post("/v1/chat/completions", json=ask("capital of france?"),
+                                 headers=auth)  # fmt: skip
+        assert resp.status_code == 200
+        assert len(app.state.cache) == 0  # no real usage: nothing to replay on a cache hit
+    [sample] = await _samples(app)
+    assert sample.routed_answer == "Paris"  # Ollama never sends usage: still worth a label

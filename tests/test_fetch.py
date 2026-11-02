@@ -61,3 +61,17 @@ def test_cli_fetch_model_prints_path(
     assert main(["fetch-model", "--out", str(tmp_path)]) == 0
     assert seen == [tmp_path]
     assert str(tmp_path / "model.onnx") in capsys.readouterr().out
+
+
+def test_oversized_download_stops_and_leaves_nothing(tmp_path: Path) -> None:
+    read: list[int] = []
+
+    class Endless(io.RawIOBase):
+        def read(self, size: int = -1) -> bytes:
+            read.append(size)
+            return b"x" * 1024  # a broken or hostile mirror that never stops
+
+    with pytest.raises(FetchError, match="larger than"):
+        fetch_model(tmp_path, sha256=GOOD, opener=lambda url: Endless(), max_bytes=10_000)
+    assert list(tmp_path.iterdir()) == []
+    assert len(read) < 20  # stopped soon after the cap, not at the end of the stream

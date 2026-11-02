@@ -258,3 +258,35 @@ import training.retrain
 """
     result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr[-500:]
+
+
+async def test_crash_leaves_no_partial_version(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("crashed mid-gate")
+
+    monkeypatch.setattr(retrain, "decide", boom)  # after the weights are written
+    with pytest.raises(RuntimeError):
+        await _run(tmp_path, _samples())
+    versions = tmp_path / "router" / "versions"
+    left = [p.name for p in versions.iterdir()] if versions.exists() else []
+    assert left == []  # no half-written folder that rollback could point at
+
+
+def test_encoder_dim_mismatch_is_a_clear_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    router = _router(tmp_path)
+    config = json.loads((router / "router.json").read_text())
+    (router / "router.json").write_text(json.dumps({**config, "dim": 768}))
+
+    class Encoder:
+        dim = 384
+
+        def __init__(self, *args: object, **kwargs: object) -> None:
+            pass
+
+    monkeypatch.setattr(retrain, "OnnxEncoder", Encoder)
+    with pytest.raises(ValueError, match="384.*768|768.*384"):
+        retrain.default_embedder(router)

@@ -1,6 +1,7 @@
 import json
 import re
 from collections.abc import AsyncIterator, Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -14,6 +15,7 @@ from tierwise.providers.base import Provider
 from tierwise.providers.openai import OpenAIProvider
 from tierwise.registry import ModelSpec, Registry
 from tierwise.reliability.retry import RetryPolicy
+from tierwise.schema import ChatRequest
 from tierwise.store import RequestLog, ShadowSample
 
 NOV = 1793577600.0  # 2026-11-02T00:00:00Z
@@ -105,14 +107,63 @@ async def test_flagship_routed_contrasts_cheapest_basic(log: RequestLog) -> None
     assert labeled.contrast_model == "small" and labeled.needs_strong is False
 
 
+TEXT = ChatRequest.model_validate({"messages": [{"role": "user", "content": "hi"}]})
+PICTURE = ChatRequest.model_validate({"messages": [{"role": "user", "content": [
+    {"type": "text", "text": "what is this?"},
+    {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}]}]})  # fmt: skip
+
+
+def _vision_registry(basic_vision: bool) -> Registry:
+    def spec(model_id: str, tier: str, price: float, caps: list[str]) -> ModelSpec:
+        return ModelSpec.model_validate({"id": model_id, "provider": "openai", "price_in": price,
+                                         "price_out": price, "context": 100_000, "caps": caps,
+                                         "quality": 0.5, "tier": tier})  # fmt: skip
+
+    models = [spec("small", "basic", 1.0, ["tools"]), spec("large", "flagship", 20.0,
+                                                            ["tools", "vision"])]  # fmt: skip
+    if basic_vision:
+        models.append(spec("eyes", "basic", 2.0, ["tools", "vision"]))
+    return Registry(baseline_model="large", models=models)
+
+
 def test_contrast_for_skips_unconfigured_providers() -> None:
     small, large = REGISTRY.get("small"), REGISTRY.get("large")
     assert small is not None and large is not None
-    assert contrast_for(small, REGISTRY, {"openai"}) == large
-    assert contrast_for(small, REGISTRY, {"anthropic"}) is None
+    assert contrast_for(small, TEXT, REGISTRY, {"openai"}) == large
+    assert contrast_for(small, TEXT, REGISTRY, {"anthropic"}) is None
 
 
-@pytest.mark.parametrize("bad", ["not json", '{"score": 9}', '{"score": "high"}', "{}"])
+def test_contrast_is_baseline_when_another_model_answered() -> None:
+    medium, large = REGISTRY.get("medium"), REGISTRY.get("large")
+    assert medium is not None
+    assert contrast_for(medium, TEXT, REGISTRY, {"openai"}) == large
+    assert contrast_for(large, TEXT, REGISTRY, {"openai"}) == REGISTRY.get("small")
+
+
+def test_vision_request_skips_basic_models_without_vision() -> None:
+    registry = _vision_registry(basic_vision=True)
+    large = registry.get("large")
+    assert large is not None
+    eyes = contrast_for(large, PICTURE, registry, {"openai"})
+    assert eyes is not None and eyes.id == "eyes"  # small is cheaper but can't see
+    assert contrast_for(large, PICTURE, _vision_registry(False), {"openai"}) is None
+
+
+async def test_no_fitting_contrast_fails_before_any_call(log: RequestLog) -> None:
+    calls: list[dict[str, Any]] = []
+    registry = _vision_registry(basic_vision=False)
+    sample = replace(_sample(0, routed="large"), request_json=PICTURE.model_dump_json())
+    await _seed(log, sample)
+    run = await label_pending(log, registry, _providers(_upstream(calls=calls)),
+                              registry.get("large") or _judge(), 100.0, 10)  # fmt: skip
+    assert (run.labeled, run.failed, run.spent_usd) == (0, 1, 0.0)
+    assert calls == []  # nothing was paid for
+
+
+@pytest.mark.parametrize(
+    "bad", ["not json", '{"score": 9}', '{"score": "high"}', "{}", '{"score": Infinity}',
+            '{"score": NaN}', '{"score": 1e400}']
+)
 def test_parse_score_rejects_bad_replies(bad: str) -> None:
     with pytest.raises(ValueError):
         parse_score(bad)
@@ -221,3 +272,22 @@ async def test_transient_judge_error_is_retried(log: RequestLog) -> None:
     run = await label_pending(log, REGISTRY, _providers(handler), _judge(), 100.0, 10,
                               policy=RetryPolicy(retries=2, base_s=0.0, max_s=0.0))  # fmt: skip
     assert (run.labeled, run.failed, len(judged)) == (1, 0, 2)
+
+
+def test_parse_score_rejects_bool_accepts_integral_float() -> None:
+    with pytest.raises(ValueError):
+        parse_score('{"score": true}')  # bool is an int subclass in Python
+    assert parse_score('{"score": 4.0}') == 4
+    with pytest.raises(ValueError):
+        parse_score('{"score": 3.5}')
+
+
+def test_non_baseline_flagship_gets_a_basic_contrast() -> None:
+    """A cheaper flagship is still the strong side: comparing it with the baseline would label
+    hard prompts 'easy', teaching the router the dangerous direction."""
+    other = ModelSpec.model_validate({
+        "id": "other-flagship", "provider": "openai", "price_in": 10.0, "price_out": 10.0,
+        "context": 100_000, "caps": ["tools", "json"], "quality": 0.9, "tier": "flagship",
+    })  # fmt: skip
+    registry = Registry(baseline_model="large", models=[*REGISTRY.models, other])
+    assert contrast_for(other, TEXT, registry, {"openai"}) == registry.get("small")

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.9.1: 2026-11-02
+
+Hardening, from review findings a real user could hit:
+
+- **Labels:** the flywheel's contrast model must be able to serve the stored request (capabilities and context, via the selector's own `fits`). A sample with no fitting model fails before any paid call, instead of after it.
+- **Sampling:** streams that end without a usage chunk, as Ollama's always do, are now sampled. They are still not cached.
+- **Startup:** the gateway starts even when no home directory can be resolved, as in containers that run under an arbitrary user ID.
+- **Retrain:** a version folder appears only once it is complete, and a mismatched encoder gives a clear error.
+- **`fetch-model`:** a download that grows past the pinned size is stopped.
+- **The judge's score:** `true` is no longer accepted as 1, and `4.0` counts as 4.
+
 ## 0.9.0: 2026-11-02
 
 **M9, the data flywheel.** The router can now learn from your own traffic.
