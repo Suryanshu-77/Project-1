@@ -65,6 +65,45 @@ All-Mixtral already reaches 85.6% of GPT-4's quality at 2.7% of its cost.
 - **The max rule:** this was added after the critical-set gate caught the classifier sending 4 of 10 labeled hard prompts (a proof, a derivation, an architecture design and a legal review) to basic-tier models. The rule costs 4 points on the held-out headline (60.0% → 56.0%), and it brings the out-of-distribution result closer to the rules router.
 - **Low confidence:** 42.0% of held-out prompts (61.6% on SPROUT) get a decision with confidence below 0.3, so the gateway raises their quality bar one step. That comes from `to_decision` measuring distance from a low threshold (0.15) in probability space. It is a deliberate upward bias, and the next thing to tune when real traffic exists.
 
+## The flywheel: do judge labels improve the router?
+
+Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama.
+
+**Setup:**
+- **Traffic:** 744 SPROUT prompts (none in the base data) went through the gateway: qwen2.5:1.5b as basic, qwen2.5:7b as flagship.
+- **Labeling:** `tierwise flywheel label` got the contrast answers. **mistral:7b**, which wrote neither answer, judged them, and `needs_strong = score < 4`.
+- **Retraining:** the classifier was refit on the base data plus the labels from train-hash prompts. It was then scored on **3,156 other SPROUT prompts against SPROUT's own gpt-4o-mini / gpt-4o quality scores**, so the scoring doesn't depend on our judge.
+
+**What went wrong first, and the fixes in 0.9.2:**
+- **A saturated test:** the first evaluation used 156 held-out prompts at the 95% target. There, all-cheap already reached 97.6% of all-strong quality, so perfect, random and constant routing all scored exactly 92.4%. The test couldn't have shown any effect. The gate now measures at a target set from its eval rows (`quality_target`: half the gap between all-cheap and all-strong, at least 95%).
+- **Dropped labels:** mistral:7b quoted 216 of its scores (`{"score": "5"}`), and `parse_score` rejected them. 171 of the 216 were 5s, so the labels that survived were skewed toward "needs strong". Quoted numbers are now accepted.
+
+**Results at a fixed 99% quality target** (the experiment's, set before the gate's `quality_target`, which would pick about 97.6% here). Δ is the mean of 300 paired bootstraps against the refit without new labels, so it differs slightly from the difference of the point estimates:
+
+| Labels added | Rate | Saved @ 99% | ROC-AUC vs SPROUT verdict | Δ vs none [95% interval] | Wins |
+|---|---|---|---|---|---|
+| none | n/a | 42.6% | 0.670 | n/a | n/a |
+| **judge `score < 4`, once (the shipped rule)** | 31% | **53.4%** | **0.693** | **+10.4 [+0.3, +21.2]** | **294/300** |
+| judge `score < 4`, 10× weight | 31% | 59.7% | 0.698 | +18.5 [+5.2, +33.8] | 297/300 |
+| judge `score < 3`, once | 8% | 40.8% | 0.659 | +0.0 [−9.1, +10.4] | 147/300 |
+| judge `score < 3`, 10× weight | 8% | 50.6% | 0.658 | +7.6 [−5.0, +20.3] | 269/300 |
+| SPROUT's own verdict, once | 7% | 39.0% | 0.654 | −3.0 [−12.4, +9.5] | 67/300 |
+| SPROUT's own verdict, 10× weight | 7% | 48.0% | 0.687 | +6.9 [−4.3, +21.1] | 256/300 |
+| perfect routing (ceiling) | n/a | 90.6% | 1.000 | +47.3 | 300/300 |
+
+ROC-AUC here is a different measure from the AUC column above. It is the chance that a prompt SPROUT says needs the strong model (cheap < 0.5 ≤ strong) scores above one that doesn't.
+
+**What it shows:**
+- **The shipped rule helps.** About 400 labels from a free 7B judge raise cost saved at 99% by about 10 points. Without them the refit saves 42.6%, with them 53.4%.
+- **Treat the 10× row as exploratory.** It was chosen after the data was seen. The 400 labels are 2% of the training set, so weighting them up is the obvious next lever.
+- **SPROUT's own binary verdict helps less than the judge's labels.** At 7% positives it gives the classifier about 40 hard examples. `score < 4` also marks prompts where the cheap answer was only somewhat worse, and those are what decide the order at a 99% target.
+- **The judge is weak as a detector.** It agreed with SPROUT's verdict on 69% of prompts, and gave a 5 to 18 of the 49 prompts SPROUT says truly needed the strong model.
+
+**Caveats:**
+- **One traffic source:** the labeled prompts and the eval prompts both come from SPROUT. Part of the gain may simply come from the prompts being in-domain. SPROUT's own labels not helping argues against that, but doesn't rule it out.
+- **Uncorrected comparisons:** seven setups are compared against the baseline, with no correction for multiple comparisons.
+- **Not in this repo:** the experiment scripts, which need Ollama and local models.
+
 ## Limitations
 
 - **Older model pairs.** Neither dataset contains tierwise's registry models (Claude 5.5, GPT-5.x, Gemini 3). The benchmark measures how well the router *ranks* prompts by how much they need a strong model, and that ranking is what carries over. The registry's `quality` values stay uncalibrated placeholders until flywheel labels exist for current models.

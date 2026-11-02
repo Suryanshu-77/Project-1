@@ -282,6 +282,18 @@ def test_parse_score_rejects_bool_accepts_integral_float() -> None:
         parse_score('{"score": 3.5}')
 
 
+@pytest.mark.parametrize("reply", ['{"score": "5"}', '{"score": " 5 "}', '{"score": "5.0"}'])
+def test_parse_score_accepts_a_quoted_number(reply: str) -> None:
+    assert parse_score(reply) == 5  # mistral:7b quoted 216 of 744 scores in a real run
+
+
+@pytest.mark.parametrize("bad", ['{"score": "3.5"}', '{"score": "Infinity"}', '{"score": "nan"}',
+                                 '{"score": "9"}', '{"score": ""}', '{"score": "true"}'])
+def test_parse_score_holds_quoted_numbers_to_the_same_rules(bad: str) -> None:
+    with pytest.raises(ValueError):
+        parse_score(bad)
+
+
 def test_non_baseline_flagship_gets_a_basic_contrast() -> None:
     """A cheaper flagship is still the strong side: comparing it with the baseline would label
     hard prompts 'easy', teaching the router the dangerous direction."""
@@ -291,3 +303,8 @@ def test_non_baseline_flagship_gets_a_basic_contrast() -> None:
     })  # fmt: skip
     registry = Registry(baseline_model="large", models=[*REGISTRY.models, other])
     assert contrast_for(other, TEXT, registry, {"openai"}) == registry.get("small")
+
+
+def test_parse_score_error_shows_what_the_judge_wrote() -> None:
+    with pytest.raises(ValueError, match="'5_0'"):
+        parse_score('{"score": "5_0"}')  # float() reads it as 50.0

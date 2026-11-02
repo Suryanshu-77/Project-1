@@ -85,9 +85,10 @@ def cost_saved_at(points: list[Point], target: float = 0.95) -> float | None:
     `points` comes from `sweep` (sorted by cost). Returns None when no point reaches `target`.
     """
     for i, p_above in enumerate(points):
-        if p_above.quality_frac >= target:
-            # If it lands exactly on the target, or it's the very first point
-            if i == 0 or p_above.quality_frac == target:
+        # prefix sums can leave all-strong at 0.9999999999999998, missing a target of 1.0
+        if p_above.quality_frac >= target - 1e-9:
+            # If it lands on the target (within rounding), or it's the very first point
+            if i == 0 or p_above.quality_frac <= target:
                 return 1.0 - p_above.cost_frac
 
             p_below = points[i - 1]
