@@ -22,8 +22,8 @@ jobs:
           --health-timeout 5s
           --health-retries 10
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
       - run: uv sync --group retrain  # scikit-learn, so the fit and retrain tests run
@@ -44,8 +44,8 @@ jobs:
   flywheel-e2e:  # the M9 exit check: sample, label, retrain and gate, end to end, at $0
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
       - run: uv sync --group retrain
@@ -55,8 +55,8 @@ jobs:
   compose-smoke:  # the M7 exit check: the whole stack up, traffic through it, dashboard live
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10
         with:
           python-version: "3.12"
       - run: docker compose -f deploy/docker-compose.yml up -d --build
