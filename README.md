@@ -12,9 +12,10 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 - **Benchmark:** on 3,943 held-out prompts, tierwise's router keeps 95% of GPT-4's quality at
   44% of its cost (random routing: 63%).
 - **Data flywheel:** the router retrains on labels from your own traffic, behind a
-  champion/challenger gate. A pre-registered test found that labels help only when they describe
-  the same model pair the router serves, and that a judge scoring just the cheaper answer
-  mislabels prompts both models fail. 0.10 fixes the second.
+  champion/challenger gate. Follow-up checks showed an early +10-point result wasn't robust.
+  In a pre-registered test, even perfect labels helped only at 2,000 of them, weighted ×5. That
+  test also found a judge scoring only the cheaper answer mislabels prompts both models fail.
+  0.10 fixes that.
 - **Method, out-of-distribution results and limitations:** [BENCHMARK.md](BENCHMARK.md).
 
 ![The tierwise Grafana dashboard under 15 minutes of mixed demo traffic](docs/benchmark/dashboard.png)
@@ -294,7 +295,8 @@ For each sample:
 Each label is two paid calls. The run stops at `TIERWISE_SHADOW_BUDGET_USD` (default $5) per
 calendar month, counting earlier runs. The run can go over the budget by at most one sample.
 The compose stack's fake upstream answers for free; its made-up prices still count against
-the budget. Its fake judge scores hard-looking prompts 2 and easy ones 5.
+the budget. On hard-looking prompts its fake judge scores the small model's answer 2, and
+every other answer 5.
 
 **Privacy:** samples store prompts and answers in your database, which is why collection
 needs three opt-ins. There is no purge command yet; delete rows from `shadow_samples`

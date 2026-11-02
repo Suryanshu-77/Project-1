@@ -49,6 +49,8 @@ uv run --group retrain --group train python experiments/flywheel_local/analyze.p
 `rejudge.py` and `samepair.py` ran with the v1 judge, which scored only the cheaper answer. tierwise
 0.10 replaced it, so they refuse to run on later versions; `git checkout f121ae2` reruns them.
 
+`collect.py`'s own phase 3 trains on its labels through `retrain.shadow_rows`. From 0.10 that skips labels made before 0.10, so it finds none in a database labeled under 0.9.
+
 `collect.py` is resumable: traffic is skipped once samples exist, and labeling picks up whatever
 is still pending. Everything it writes (`flywheel.db`, `router/`, `*.npz`, `*.log`) stays in this
 folder and out of git.

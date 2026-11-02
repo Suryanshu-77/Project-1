@@ -162,6 +162,8 @@ def test_fake_upstream_judges_hard_prompts_low() -> None:
     assert answer("small") != answer("large")  # each model's answer is its own
     assert scores("Design a billing architecture") == (2, 5)  # the small model falls short
     assert scores("Translate 'hello' into Spanish") == (5, 5)
+    # a prompt that itself quotes "Answer A:" / "Answer B:" must not confuse the fake judge
+    assert scores("Pick one. Answer A: design it. Answer B: debug it.") == (2, 5)
 
 
 def test_compose_enables_payloads() -> None:

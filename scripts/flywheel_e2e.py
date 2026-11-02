@@ -1,7 +1,8 @@
 """The M9 exit check: sample → label → retrain → gate, end to end, at $0.
 
-Runs in-process against the fake upstream (its fake judge scores hard-looking prompts 2 and easy
-ones 5). Needs the encoder: `tierwise fetch-model` (CI) or a local models/router/model.onnx.
+Runs in-process against the fake upstream (on hard-looking prompts its fake judge scores the
+small model's answer 2; every other answer scores 5). Needs the encoder: `tierwise fetch-model`
+(CI) or a local models/router/model.onnx.
 Usage: uv run --group retrain python scripts/flywheel_e2e.py
 """
 

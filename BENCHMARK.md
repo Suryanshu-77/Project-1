@@ -67,7 +67,7 @@ All-Mixtral already reaches 85.6% of GPT-4's quality at 2.7% of its cost.
 
 ## The flywheel: do judge labels improve the router?
 
-Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama. Scripts and steps: [`experiments/flywheel_local`](experiments/flywheel_local/README.md).
+The first run was fully local, at $0, on an RTX 4060 laptop GPU with Ollama. The follow-ups used a paid judge. Scripts and steps: [`experiments/flywheel_local`](experiments/flywheel_local/README.md).
 
 **Setup:**
 - **Traffic:** 744 SPROUT prompts (none in the base data) went through the gateway: qwen2.5:1.5b as basic, qwen2.5:7b as flagship.
@@ -95,19 +95,19 @@ ROC-AUC here is a different measure from the AUC column above. It is the chance 
 
 **What later checks showed: this run can't tell whether the flywheel helps.**
 - **The +10.4 isn't robust.** On the 401 prompts whose answer pairs were stored, mistral's labels give **+4.3 [−4.5, +12.8]**, which isn't significant. The +10.4 needed 175 recovered labels, mostly "the cheap answer was fine".
-- **A stronger judge made the router worse.** Claude Haiku 5.5 re-judged the stored pairs for $0.15. It called 83% of them "needs strong", and its labels cut cost saved by **18.7 points [−30.1, −9.3]**. That doesn't mean it judged badly. A label belongs to one model pair: these compare qwen2.5:1.5b with qwen2.5:7b, a gap Haiku saw clearly, while the eval asks whether *gpt-4o-mini* falls short of *gpt-4o*.
+- **A stronger judge made the router worse** (a follow-up check, not pre-registered). Claude Haiku 5.5 re-judged the stored pairs for $0.15. It called 83% of them "needs strong", and its labels cut cost saved by **18.7 points [−30.1, −9.3]**. That doesn't mean it judged badly. A label belongs to one model pair: these compare qwen2.5:1.5b with qwen2.5:7b, a gap Haiku saw clearly, while the eval asks whether *gpt-4o-mini* falls short of *gpt-4o*.
 - **So the labels and the eval describe different model pairs.** Mistral's lenient labels happened to suit the gpt-4o pair better.
 
 ### The same-pair test (pre-registered)
 
 [`PROTOCOL.md`](experiments/flywheel_local/PROTOCOL.md) fixed every rule before its runs.
 - **Labels:** Claude Haiku judges SPROUT's own gpt-4o-mini vs gpt-4o answer texts, the pair the eval scores.
-- **Prompts:** labels come from SPROUT's train split. The eval uses the test split, halved: one half to choose a setup, the other to test it once.
+- **Prompts:** labels come from SPROUT's train split. The eval uses the test split, halved: one half to choose a setup, the other to test it once. Amendment 1, made before any paid call, adds the train prompts never labeled to the test half.
 - **Controls:** every comparison is checked against the same prompts with shuffled labels, and against a 5-seed retraining noise band.
 
 | Stage | Cost | Result |
 |---|---|---|
-| **0: can perfect labels help?** SPROUT's own verdicts, 500 / 1,000 / 2,000 prompts, added once or ×5 | $0 | Only at **2,000 ×5**: +12.9 [+1.5, +27.7] (G) and +17.5 [+3.5, +33.3] (S). Added once, even 2,000 perfect labels don't clear the noise. |
+| **0: can perfect labels help?** SPROUT's own verdicts, 500 / 1,000 / 2,000 prompts, added once or ×5 | $0 | Only at **2,000 ×5**: +12.9 [+1.5, +27.7] (G) and +17.5 [+3.5, +33.3] (S). Added once, even 2,000 perfect labels beat the noise band, but their intervals include 0. |
 | **1: does Haiku judge like SPROUT?** 400 pairs, plus two 20-pair checks | $0.16 | AUC **0.897** against SPROUT's verdict, and order flips agree (18/20). But identical answers scored 4 or more only **14/20** (18 needed), so **NO-GO**: stage 2 wasn't run. |
 
 **Why the identical-answer check failed:**
@@ -115,9 +115,9 @@ ROC-AUC here is a different measure from the AUC column above. It is the chance 
 - **The flaw it exposed:** labels from a judge that scores only the cheaper answer call prompts that *both* models fail "needs strong", so the router learns to pay for the flagship where it buys nothing.
 - **The fix, in 0.10:** the judge scores both answers, and a prompt needs the strong model only when the cheaper answer falls short and the stronger one doesn't.
 
-Rerunning stage 1 and stage 2 under that rule is the next step. It is about 2,000 judge calls (about ₹80 at this run's measured rate).
+Rerunning stage 1 and stage 2 under that rule needs a re-specified protocol first. The identical-answer check, the order-flip check and the AUC cutoff are all defined for one score. The run itself is about 2,000 judge calls, about ₹80 at this run's measured rate.
 
-**Spent in all:** ₹33.79 (about $0.31), through AICredits.
+**Spent in all:** ₹33.79, through AICredits ($0.31 at list price).
 
 ## Limitations
 

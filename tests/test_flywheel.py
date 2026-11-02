@@ -1,4 +1,5 @@
 import json
+import os
 import re
 from collections.abc import AsyncIterator, Callable
 from dataclasses import replace
@@ -107,8 +108,9 @@ def _judge() -> ModelSpec:
     return spec
 
 
-async def test_cheap_routed_gets_flagship_contrast_and_label(log: RequestLog) -> None:
-    await _seed(log, _sample(0, routed="small"))
+@pytest.mark.parametrize("i", [0, 1])  # the cheaper answer shown as A, then as B
+async def test_cheap_routed_gets_flagship_contrast_and_label(log: RequestLog, i: int) -> None:
+    await _seed(log, _sample(i, routed="small"))
     run = await label_pending(log, REGISTRY, _providers(_upstream()), _judge(), 100.0, 10,
                               clock=lambda: NOV)  # fmt: skip
     [labeled] = await log.labeled_samples()
@@ -116,6 +118,8 @@ async def test_cheap_routed_gets_flagship_contrast_and_label(log: RequestLog) ->
     assert labeled.status == "labeled" and labeled.contrast_model == "large"
     assert labeled.contrast_answer == "answer from large"
     assert (labeled.judge_score, labeled.judge_score_strong) == (2, 5)  # cheap, strong
+    order = flywheel.judge_messages("q", "c", "s", seed=f"s{i}")[1]
+    assert order == ("a" if i == 0 else "b")  # both mappings are exercised
     assert labeled.needs_strong is True
     # contrast on large (2000 tokens at $20/M) plus the judge on large: $0.04 + $0.04
     assert labeled.label_cost_usd == pytest.approx(0.08) and run.spent_usd == pytest.approx(0.08)
@@ -150,7 +154,9 @@ def test_needs_strong_never_fires_on_equal_scores() -> None:
 
 
 def test_needs_strong_when_only_the_cheap_answer_falls_short() -> None:
-    assert needs_strong(2, 5) and needs_strong(1, 5)
+    assert needs_strong(2, 5) and needs_strong(1, 5) and needs_strong(3, 4)
+    assert not needs_strong(4, 5)  # a cheap answer a user would accept
+    assert not needs_strong(1, 3)  # the strong answer falls short too
     assert not needs_strong(5, 3) and not needs_strong(4, 2)  # the cheaper answer was better
 
 
@@ -225,6 +231,10 @@ def test_parse_scores_rejects_bad_replies(bad: str) -> None:
         parse_scores(bad)
 
 
+def test_parse_scores_accepts_capital_keys() -> None:
+    assert parse_scores('{"A": 2, "B": 5}') == (2, 5)  # the body calls them "Answer A" and "B"
+
+
 def test_parse_scores_accepts_fenced_json() -> None:
     assert parse_scores('```json\n{"a": 4, "b": 5}\n```') == (4, 5)
 
@@ -288,6 +298,8 @@ def test_cli_flywheel_label_prints_summary_only(
 
     monkeypatch.setattr(flywheel, "label_pending", fake)
     monkeypatch.chdir(tmp_path)  # no developer .env: it could name another judge model
+    for name in [n for n in os.environ if n.startswith("TIERWISE_") or n == "JUDGE_MODEL"]:
+        monkeypatch.delenv(name)  # nor an exported setting
     monkeypatch.setenv("TIERWISE_REGISTRY", str(Path(__file__).parents[1] / "config/registry.yaml"))
     monkeypatch.setenv("TIERWISE_DB_URL", f"sqlite+aiosqlite:///{(tmp_path / 'c.db').as_posix()}")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")

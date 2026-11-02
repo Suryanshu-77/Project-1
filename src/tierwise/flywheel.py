@@ -97,7 +97,8 @@ def parse_scores(text: str) -> tuple[int, int]:
     reply = json.loads(match.group(0))
     if not isinstance(reply, dict):
         raise ValueError(f"judge reply is not a JSON object: {text[:80]!r}")
-    return _score(reply.get("a")), _score(reply.get("b"))
+    keys = {str(k).lower(): v for k, v in reply.items()}  # the body says "Answer A"
+    return _score(keys.get("a")), _score(keys.get("b"))
 
 
 def _score(raw: Any) -> int:

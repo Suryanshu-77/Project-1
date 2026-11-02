@@ -1,6 +1,7 @@
 import hashlib
 import json
 import shutil
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
@@ -46,7 +47,8 @@ def _labeled(i: int, prompt: str, hard: bool) -> ShadowSample:
         id=f"s{i}", ts=1000.0 + i, key_id="k", request_json=json.dumps(request),
         routed_model=routed, routed_answer="a routed answer", difficulty=0.5, confidence=0.4,
         source="rules", status="labeled", contrast_model=contrast,
-        contrast_answer="a contrast answer", judge_score=2 if hard else 5, needs_strong=hard,
+        contrast_answer="a contrast answer", judge_score=2 if hard else 5, judge_score_strong=5,
+        needs_strong=hard,
         label_cost_usd=0.01, labeled_ts=NOW,
     )  # fmt: skip
 
@@ -103,6 +105,25 @@ def test_critical_prompts_excluded_from_training() -> None:
     splits = shadow_rows(_samples(20), REGISTRY, critical={hard_prompt.lower()})
     prompts = [r.prompt for rows in splits.values() for r in rows]
     assert hard_prompt not in prompts and len(prompts) == 19
+
+
+def test_one_score_labels_from_before_0_10_are_left_out() -> None:
+    """A one-score judge also called prompts both models fail 'needs strong': training on those
+    would teach the router to pay for a flagship that buys nothing."""
+    old = [replace(s, judge_score_strong=None) for s in _samples(20)]
+    assert shadow_rows(old, REGISTRY, critical=set()) == {"train": [], "val": [], "test": []}
+
+
+async def test_retrain_reports_the_old_labels_it_skipped(tmp_path: Path) -> None:
+    old = [replace(s, id=f"old{i}", judge_score_strong=None) for i, s in enumerate(_samples(30))]
+    report = await _run(tmp_path, _samples() + old, promote=False)
+    assert (report.n_labels, report.n_old_labels_skipped) == (400, 30)
+
+
+async def test_too_few_new_labels_says_how_many_old_ones_were_skipped(tmp_path: Path) -> None:
+    old = [replace(s, judge_score_strong=None) for s in _samples(40)]
+    with pytest.raises(NotEnoughLabels, match="40 from before 0.10"):
+        await _run(tmp_path, old)
 
 
 async def test_refuses_below_20_labels(tmp_path: Path) -> None:

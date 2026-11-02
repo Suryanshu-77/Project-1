@@ -41,8 +41,9 @@ def _judge(messages: list[dict[str, Any]]) -> str | None:
     first = messages[0] if messages else {}
     if first.get("role") != "system" or JUDGE_MARKER not in str(first.get("content")):
         return None
-    conversation, answers = str(messages[-1].get("content")).split("Answer A:", 1)
-    a, b = answers.split("Answer B:", 1)
+    # from the end: the conversation itself may quote "Answer A:" (judge_messages' layout)
+    rest, b = str(messages[-1].get("content")).rsplit("\n\nAnswer B:\n", 1)
+    conversation, a = rest.rsplit("\n\nAnswer A:\n", 1)
     hard = any(word in conversation.lower() for word in HARD)
     return json.dumps({key: 2 if hard and "(small)" in text else 5
                        for key, text in (("a", a), ("b", b))})  # fmt: skip
