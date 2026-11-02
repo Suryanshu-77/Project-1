@@ -6,8 +6,12 @@ Labels on the SPROUT train-hash prompts already judged by collect.py:
 each added once (x1) or duplicated 10 times (x10, since 400 rows are 2% of base train).
 Eval: up to 3000 SPROUT test prompts never sent, plus collect.py's held-out ones, scored by real
 quality at 99% (95% is saturated: all-cheap already reaches 97.6%) and ROC-AUC vs gold.
+
+--judge MODEL compares rejudge.py's scores from MODEL with mistral's on the same prompts: only
+the pairs both judged (the 497 whose answers were stored), so the judge is all that differs.
 """
 
+import argparse
 import json
 import random
 import re
@@ -31,6 +35,10 @@ from training.prepare_data import DATA_DIR, normalize, split_of  # noqa: E402
 from training.train import _request, fit  # noqa: E402
 
 TARGET, BOOTSTRAPS, EVAL_N = 0.99, 300, 3000
+parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+parser.add_argument("--judge", help="a rejudge.py judge to compare with mistral, e.g. "
+                    "anthropic/claude-haiku-5.5")  # fmt: skip
+args = parser.parse_args()
 CACHE = HERE / "emb_cache.npz"
 
 chosen = collect.sprout()
@@ -45,14 +53,14 @@ evals = random.Random(1).sample(unsent, min(EVAL_N, len(unsent)))
 evals += [r for r in chosen if split_of(r.prompt) != "train"]
 
 db = sqlite3.connect(HERE / "flywheel.db")
-judged: list[tuple[str, int]] = []
-for request_json, score, error in db.execute(
-        "select request_json, judge_score, error from shadow_samples"):  # fmt: skip
+judged: list[tuple[str, int, str]] = []  # (prompt, mistral score, sample id)
+for sid, request_json, score, error in db.execute(
+        "select id, request_json, judge_score, error from shadow_samples"):  # fmt: skip
     prompt = json.loads(request_json)["messages"][-1]["content"]
     if score is None and error and (m := re.match(r"judge score '(\d)'", error)):
         score = int(m.group(1))
     if score is not None and split_of(prompt) == "train" and normalize(prompt) in by_prompt:
-        judged.append((prompt, int(score)))
+        judged.append((prompt, int(score), sid))
 print(
     f"SPROUT unsent pool {len(unsent)}; eval rows {len(evals)}; "
     f"gold positives in eval {sum(collect.gold(r) for r in evals)}; train labels {len(judged)}"
@@ -67,19 +75,43 @@ else:
     base_tr, _ = retrain._base(DATA_DIR, "train")
     base_va, _ = retrain._base(DATA_DIR, "val")
     x_tr, x_va = embed(base_tr), embed(base_va)
-    x_sh = embed([_request(p) for p, _ in judged])
+    x_sh = embed([_request(p) for p, _, _ in judged])
     x_ev = embed([_request(r.prompt) for r in evals])
     np.savez(CACHE, tr=x_tr, va=x_va, sh=x_sh, ev=x_ev)
 _, y_tr = retrain._base(DATA_DIR, "train")
 _, y_va = retrain._base(DATA_DIR, "val")
 y_tr, y_va = np.array(y_tr), np.array(y_va)
 
-score = np.array([s for _, s in judged])
-labels = {
-    "judge<4": (score < 4).astype(int),
-    "judge<3": (score < 3).astype(int),
-    "gold": np.array([collect.gold(by_prompt[normalize(p)]) for p, _ in judged]),
-}
+if args.judge:
+    other = dict(db.execute("select sample_id, score from rejudge where judge = ? and score is "
+                            "not null", (args.judge,)).fetchall())  # fmt: skip
+    # agreement with SPROUT's verdict on every pair both judged, held-out prompts included
+    both = [(json.loads(rj)["messages"][-1]["content"], s, other[sid]) for sid, rj, s in
+            db.execute("select id, request_json, judge_score from shadow_samples "
+                       "where status = 'labeled'") if sid in other]  # fmt: skip
+    gold_both = np.array([collect.gold(by_prompt[normalize(p)]) for p, _, _ in both])
+    for name, col in (("mistral:7b", 1), (args.judge, 2)):
+        pred = np.array([row[col] < 4 for row in both])
+        print(f"{name}: agrees with SPROUT on {np.mean(pred == gold_both):.0%} of {len(both)}; "
+              f"needs-strong rate {pred.mean():.0%} (SPROUT {gold_both.mean():.0%})")
+    keep = [i for i, (_, _, sid) in enumerate(judged) if sid in other]
+    judged, x_sh = [judged[i] for i in keep], x_sh[keep]
+    score = np.array([s for _, s, _ in judged])
+    theirs = np.array([other[sid] for _, _, sid in judged])
+    labels = {
+        "mistral<4": (score < 4).astype(int),
+        "strong<4": (theirs < 4).astype(int),
+        "strong<3": (theirs < 3).astype(int),
+        "gold": np.array([collect.gold(by_prompt[normalize(p)]) for p, _, _ in judged]),
+    }
+    print(f"train labels both judged: {len(judged)} (strong = {args.judge})")
+else:
+    score = np.array([s for _, s, _ in judged])
+    labels = {
+        "judge<4": (score < 4).astype(int),
+        "judge<3": (score < 3).astype(int),
+        "gold": np.array([collect.gold(by_prompt[normalize(p)]) for p, _, _ in judged]),
+    }
 gold_eval = np.array([collect.gold(r) for r in evals])
 
 probs: dict[str, np.ndarray] = {}
