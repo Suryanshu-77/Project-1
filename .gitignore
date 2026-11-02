@@ -22,3 +22,4 @@ docs/SESSION-*.md
 experiments/flywheel_local/router/
 experiments/flywheel_local/*.npz
 experiments/flywheel_local/*.log
+experiments/flywheel_local/*.db-*
