@@ -17,3 +17,8 @@ training/data/
 docs/superpowers/
 docs/HANDOFF.md
 docs/SESSION-*.md
+
+# local flywheel experiment outputs (experiments/flywheel_local/README.md)
+experiments/flywheel_local/router/
+experiments/flywheel_local/*.npz
+experiments/flywheel_local/*.log

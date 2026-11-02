@@ -67,7 +67,7 @@ All-Mixtral already reaches 85.6% of GPT-4's quality at 2.7% of its cost.
 
 ## The flywheel: do judge labels improve the router?
 
-Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama.
+Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama. Scripts and steps: [`experiments/flywheel_local`](experiments/flywheel_local/README.md).
 
 **Setup:**
 - **Traffic:** 744 SPROUT prompts (none in the base data) went through the gateway: qwen2.5:1.5b as basic, qwen2.5:7b as flagship.
@@ -102,7 +102,6 @@ ROC-AUC here is a different measure from the AUC column above. It is the chance 
 **Caveats:**
 - **One traffic source:** the labeled prompts and the eval prompts both come from SPROUT. Part of the gain may simply come from the prompts being in-domain. SPROUT's own labels not helping argues against that, but doesn't rule it out.
 - **Uncorrected comparisons:** seven setups are compared against the baseline, with no correction for multiple comparisons.
-- **Not in this repo:** the experiment scripts, which need Ollama and local models.
 
 ## Limitations
 

@@ -305,7 +305,8 @@ uv run python -m training.retrain           # add --dry-run to gate without prom
    **challenger** is trained.
 2. **Score.** The current router (the **champion**) and the challenger are scored on the same
    held-out rows:
-   - the cost saved at 95% of flagship quality
+   - the cost saved at a quality target set from those rows: half the gap between all-cheap
+     and all-flagship quality, never below 95%, so easy traffic can't make every router tie
    - critical misroutes: the 10 labeled hard prompts in `tests/router/labeled_prompts.jsonl`
      that the deployed router would send to a basic model, counted through the gateway's own
      `route()` and `select()`
