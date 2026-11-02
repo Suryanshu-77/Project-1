@@ -37,7 +37,9 @@ class Fitted:
     val_auc: dict[str, float] | None  # None when validation has a single class
 
 
-def fit(x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray) -> Fitted:
+def fit(
+    x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.ndarray, seed: int = 0
+) -> Fitted:
     """Fit logistic regression and (with enough data) an MLP; keep the better on validation
     ROC-AUC and pick the threshold there. With one validation class neither can be scored:
     keep logistic regression and a neutral 0.5 threshold."""
@@ -46,7 +48,7 @@ def fit(x_train: np.ndarray, y_train: np.ndarray, x_val: np.ndarray, y_val: np.n
     }
     if len(x_train) >= MIN_MLP_TRAIN:
         candidates["mlp"] = MLPClassifier(
-            hidden_layer_sizes=(128,), early_stopping=True, random_state=0
+            hidden_layer_sizes=(128,), early_stopping=True, random_state=seed
         )
     for model in candidates.values():
         model.fit(x_train, y_train)

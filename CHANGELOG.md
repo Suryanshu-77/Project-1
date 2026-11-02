@@ -1,6 +1,17 @@
 # Changelog
 
-## Unreleased
+## 0.10.0: 2026-11-03
+
+**Flywheel labels mean what they say.** A pre-registered test with a paid judge found that labels from a judge scoring only the cheaper answer mark prompts that *both* models fail as "needs strong". Routing those to the flagship buys nothing. See `BENCHMARK.md`.
+
+- **The judge scores both answers,** each from 1 to 5 on its own merits (`tierwise-judge-v2`, reply `{"a": n, "b": n}`).
+- **The new rule:** a prompt needs the strong model when the cheaper answer scores below 4 and the stronger one 4 or more (`flywheel.needs_strong`).
+- **Both scores are stored.** The new `shadow_samples.judge_score_strong` column is added to existing databases on startup.
+- **Labels from before 0.10 are no longer trained on.** Retraining reports how many it skipped (`n_old_labels_skipped`). They stay in the database. To relabel them under the new rule (each costs two paid calls again), run this, then `tierwise flywheel label`:
+  `UPDATE shadow_samples SET status='pending', needs_strong=NULL, judge_score=NULL, error=NULL WHERE judge_score_strong IS NULL AND status='labeled';`
+- **API:** `flywheel.parse_score` is replaced by `parse_scores`, and `judge_messages` now returns `(messages, cheap_key)`.
+- **SPROUT loader fix:** `load_sprout` reads only the requested split. Once the train split was cached, "test" silently returned both. Published numbers predate that and are unaffected.
+- **Experiments:** `experiments/flywheel_local/` gains the paid re-judge, the pre-registered protocol and its stages. `training.train.fit` takes a `seed`, which defaults to 0, so behaviour is unchanged.
 
 - **Dashboard:** rebuilt. It now has headline stats with sparklines, spend against all-flagship, requests by model, routing decisions (why each request went where it did), latency percentiles, errors by status, failovers, stream hold and flywheel samples.
 - **Demo traffic:** `scripts/traffic.py` sends a realistic mix through the compose stack. Two opt-in fake-upstream knobs, `FAKE_DELAY_S` and `FAKE_FAIL_RATE`, add model latency and 503s.

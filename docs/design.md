@@ -237,8 +237,8 @@ Rev 6 moves the contrast call and the judge **offline**. The label is a property
     - A sample is one `shadow_samples` row (`status=pending`), written by the queued writer. Samples are droppable telemetry, counted in `tierwise_shadow_samples_total`.
   - **`tierwise flywheel label`, offline.** For each pending sample:
     1. Call the **contrast model**: the registry's `baseline_model` if a cheaper model answered, otherwise the cheapest `basic`-tier model.
-    2. Ask the **judge** (`TIERWISE_JUDGE_MODEL`, default `baseline_model`) to score the cheaper answer from 1 to 5. It sees both answers in random order and replies in JSON.
-    3. Set `needs_strong = score < 4`, the same mapping as the M4 training labels.
+    2. Ask the **judge** (`TIERWISE_JUDGE_MODEL`, default `baseline_model`) to score both answers from 1 to 5, each on its own merits (`tierwise-judge-v2`; until 0.10 it scored only the cheaper one). It sees them in an order seeded by the sample id and replies `{"a": n, "b": n}`.
+    3. Set `needs_strong = cheap < 4 <= strong` (`flywheel.needs_strong`): the cheaper answer falls short where the stronger one doesn't. A prompt both models fail isn't labeled "needs strong": the flagship buys nothing there. Both scores are stored (`judge_score`, `judge_score_strong`). Retraining skips labels from before 0.10, which have no strong score. The base dataset's labels stay one-sided (Mixtral graded below 4), since its strong answer is GPT-4's, taken as correct.
     - Spend stops at `TIERWISE_SHADOW_BUDGET_USD` (default 5) per calendar month (UTC).
 - **M9b: learning.**
   - **Retrain.** `training/retrain.py` (dependency group `retrain`: scikit-learn, no torch) merges labeled shadow rows with the base split when it exists. Shadow rows are split by prompt hash, using the base data's `split_of`. It trains a challenger with the same `fit` logic as `training/train.py`.

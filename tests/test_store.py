@@ -336,7 +336,8 @@ async def test_save_label_moves_out_of_pending(db_url: str) -> None:
     await log.stop()
     await log.start()
     labeled = replace(_sample(0), status="labeled", contrast_model="large",
-                      contrast_answer="better", judge_score=2, needs_strong=True,
+                      contrast_answer="better", judge_score=2, judge_score_strong=5,
+                      needs_strong=True,
                       label_cost_usd=0.01, labeled_ts=2000.0)  # fmt: skip
     await log.save_label(labeled)
     assert [s.id for s in await log.pending_samples(10)] == ["s1"]
@@ -381,6 +382,24 @@ async def test_existing_db_gains_allow_shadow_column(tmp_path: Path) -> None:
     await upgraded.stop()
     assert keys["old"].allow_shadow is False and keys["new"].allow_shadow is True
     assert new.allow_shadow
+
+
+async def test_existing_db_gains_strong_judge_score_column(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit_sample(_sample(0))
+    await log.stop()
+    with sqlite3.connect(tmp_path / "t.db") as conn:  # a 0.9 database: one judge score per label
+        conn.execute("ALTER TABLE shadow_samples DROP COLUMN judge_score_strong")
+    upgraded = RequestLog(_url(tmp_path))
+    await upgraded.start()
+    assert upgraded.added_columns == ["judge_score_strong"]
+    [old] = await upgraded.pending_samples(10)
+    await upgraded.save_label(replace(old, status="labeled", judge_score=2, judge_score_strong=5,
+                                      needs_strong=True, labeled_ts=2000.0))  # fmt: skip
+    [labeled] = await upgraded.labeled_samples()
+    await upgraded.stop()
+    assert (old.judge_score_strong, labeled.judge_score_strong) == (None, 5)
 
 
 async def test_failed_sample_write_logs_no_payload_and_counts(

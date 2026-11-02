@@ -72,6 +72,7 @@ class RetrainReport:
     version: str
     promoted: bool
     n_labels: int
+    n_old_labels_skipped: int = 0  # one-score labels from before 0.10, never trained on
 
 
 def prompt_of(request: ChatRequest) -> str:
@@ -87,13 +88,16 @@ def shadow_rows(
     samples: list[ShadowSample], registry: Registry, critical: set[str]
 ) -> dict[Split, list[ShadowRow]]:
     """Labeled samples as training and eval rows, split by prompt hash. Critical prompts are
-    left out, so the gate's critical-misroute check never scores a prompt it trained on."""
+    left out, so the gate's critical-misroute check never scores a prompt it trained on.
+    Labels from before 0.10 are left out too (see `old_labels`)."""
     splits: dict[Split, list[ShadowRow]] = {"train": [], "val": [], "test": []}
     for sample in samples:
         routed = registry.get(sample.routed_model)
         contrast = registry.get(sample.contrast_model or "")
         if routed is None or contrast is None or sample.needs_strong is None:
             continue  # a model left the registry: its prices are gone
+        if sample.judge_score_strong is None:
+            continue  # a one-score label from before 0.10: see old_labels
         request = ChatRequest.model_validate_json(sample.request_json)
         prompt = prompt_of(request)
         if normalize(prompt) in critical:
@@ -109,6 +113,13 @@ def shadow_rows(
                       _cost(strong, prompt, strong_answer))  # fmt: skip
         splits[split_of(prompt)].append(ShadowRow(prompt, request, label, row))
     return splits
+
+
+def old_labels(samples: list[ShadowSample]) -> int:
+    """Labels a pre-0.10 judge gave from the cheaper answer's score alone. It also called prompts
+    both models fail "needs strong", so training on them would teach the router to pay for a
+    flagship that buys nothing. They stay in the database; CHANGELOG 0.10.0 shows how to relabel."""
+    return sum(s.needs_strong is not None and s.judge_score_strong is None for s in samples)
 
 
 def default_embedder(router_dir: Path) -> Embed:
@@ -228,8 +239,11 @@ async def run(
     critical_prompts = _critical(critical_path)
     splits = shadow_rows(samples, registry, {normalize(p) for p in critical_prompts})
     n_labels = sum(len(rows) for rows in splits.values())
+    n_old = old_labels(samples)
     if n_labels < MIN_LABELS:
-        raise NotEnoughLabels(f"{n_labels} usable labeled samples; need at least {MIN_LABELS}")
+        skipped = f" ({n_old} from before 0.10 skipped: relabel them)" if n_old else ""
+        raise NotEnoughLabels(f"{n_labels} usable labeled samples{skipped}; "
+                              f"need at least {MIN_LABELS}")  # fmt: skip
 
     train_req, train_y = _base(data_dir, "train")
     val_req, val_y = _base(data_dir, "val")
@@ -294,7 +308,8 @@ async def run(
 
         metrics = {
             "version": version, "kind": fitted.kind, "threshold": fitted.threshold,
-            "val_auc": fitted.val_auc, "n_labels": n_labels, "n_train": len(train_y),
+            "val_auc": fitted.val_auc, "n_labels": n_labels, "n_old_labels_skipped": n_old,
+            "n_train": len(train_y),
             "n_eval": len(eval_rows), "decision": decision, "reason": reason,
             "champion": asdict(champion_result), "challenger": asdict(challenger_result),
         }  # fmt: skip
@@ -312,7 +327,7 @@ async def run(
     if promoted:
         _promote(router_dir, new, config)
     return RetrainReport(decision, reason, champion_result, challenger_result, version,
-                         promoted, n_labels)  # fmt: skip
+                         promoted, n_labels, n_old)  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -331,6 +346,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"retrain skipped: {exc}", file=sys.stderr)
         return 2
     print(json.dumps(asdict(report), indent=2))
+    if report.n_old_labels_skipped:
+        print(f"skipped {report.n_old_labels_skipped} labels from before 0.10 (one-score judge); "
+              "CHANGELOG 0.10.0 shows how to relabel them", file=sys.stderr)  # fmt: skip
     if report.promoted:
         print(f"promoted {report.version}; restart the gateway to load it", file=sys.stderr)
     return 0

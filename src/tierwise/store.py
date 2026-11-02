@@ -129,7 +129,8 @@ shadow_samples_table = Table(
     Column("status", String, nullable=False, index=True),  # pending | labeled | failed
     Column("contrast_model", String),
     Column("contrast_answer", String),
-    Column("judge_score", Integer),
+    Column("judge_score", Integer),  # the cheaper answer's
+    Column("judge_score_strong", Integer),  # the stronger answer's (since 0.10)
     Column("needs_strong", Boolean),
     Column("label_cost_usd", Float, nullable=False),
     Column("labeled_ts", Float),
@@ -174,7 +175,8 @@ class ShadowSample:
     status: str = "pending"
     contrast_model: str | None = None
     contrast_answer: str | None = None
-    judge_score: int | None = None
+    judge_score: int | None = None  # the cheaper answer's
+    judge_score_strong: int | None = None  # the stronger answer's; None before 0.10
     needs_strong: bool | None = None
     label_cost_usd: float = 0.0
     labeled_ts: float | None = None
@@ -198,13 +200,13 @@ def _sqlite_pragmas(dbapi_connection: Any, _: Any) -> None:
 
 
 def _add_missing_columns(conn: Connection) -> list[str]:
-    """Bring older ``requests`` and ``api_keys`` tables up to date by adding new nullable columns.
+    """Bring older tables up to date by adding their new nullable columns.
 
     ``create_all`` never alters an existing table, so a database written by an earlier
     version would otherwise reject every insert. Existing rows keep NULL in the new columns.
     """
     added = []
-    for table in (requests_table, api_keys_table):
+    for table in (requests_table, api_keys_table, shadow_samples_table):
         present = {column["name"] for column in inspect(conn).get_columns(table.name)}
         for column in table.columns:
             if column.name in present:

@@ -79,3 +79,19 @@ def test_load_gpt4_test_keeps_unicode_line_separators(tmp_path: Path) -> None:
     path.write_text(json.dumps(_gpt4(prompt), ensure_ascii=False) + "\n", encoding="utf-8")
     [row] = load_gpt4_test(path)
     assert row.prompt == prompt
+
+
+def test_load_sprout_reads_only_the_requested_split(tmp_path: Path, monkeypatch: Any) -> None:
+    pa = pytest.importorskip("pyarrow")
+    pq = pytest.importorskip("pyarrow.parquet")
+    import huggingface_hub
+
+    from evaluation.datasets import load_sprout
+
+    (tmp_path / "data").mkdir()
+    for split in ("test", "train"):  # a cache that already holds both splits
+        pq.write_table(pa.Table.from_pylist([{**_sprout(0.25, 1.0), "prompt": split}]),
+                       tmp_path / "data" / f"{split}-00000-of-00001.parquet")  # fmt: skip
+    monkeypatch.setattr(huggingface_hub, "snapshot_download", lambda *a, **kw: str(tmp_path))
+    assert [r.prompt for r in load_sprout("test")[0]] == ["test"]
+    assert [r.prompt for r in load_sprout("train")[0]] == ["train"]
