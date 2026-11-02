@@ -21,7 +21,7 @@ from tierwise.router.encoder import OnnxEncoder, build_inputs, load_tokenizer
 from tierwise.router.features import extract_features
 from tierwise.router.rules import score
 from tierwise.schema import ChatRequest
-from training.export_onnx import ENCODER
+from training import ENCODER
 from training.prepare_data import DATA_DIR
 
 ROUTER_DIR = Path("models/router")

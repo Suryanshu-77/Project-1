@@ -237,3 +237,24 @@ async def test_critical_check_uses_the_deployed_hybrid() -> None:
     # rules, and the gate adds a classifier-only non-regression check on top (gate.decide).
     assert await retrain.critical_misroutes(hard, np.zeros(10), 0.5, REGISTRY) == 0
     assert await retrain.critical_misroutes(hard, np.ones(10), 0.5, REGISTRY) == 0
+
+
+def test_retrain_imports_without_torch() -> None:
+    """The `retrain` dependency group has no torch: nothing retrain imports may need it."""
+    import subprocess
+    import sys
+
+    # torch "not installed": its import fails the way it does in CI
+    code = """
+import sys
+
+class NoTorch:
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] == "torch":
+            raise ModuleNotFoundError(name)
+
+sys.meta_path.insert(0, NoTorch())
+import training.retrain
+"""
+    result = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-500:]
