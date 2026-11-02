@@ -78,7 +78,7 @@ Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama.
 - **A saturated test:** the first evaluation used 156 held-out prompts at the 95% target. There, all-cheap already reached 97.6% of all-strong quality, so perfect, random and constant routing all scored exactly 92.4%. The test couldn't have shown any effect. The gate now measures at a target set from its eval rows (`quality_target`: half the gap between all-cheap and all-strong, at least 95%).
 - **Dropped labels:** mistral:7b quoted 216 of its scores (`{"score": "5"}`), and `parse_score` rejected them. 171 of the 216 were 5s, so the labels that survived were skewed toward "needs strong". Quoted numbers are now accepted.
 
-**Results at 99% quality**, with 300 paired bootstraps against the refit without new labels:
+**Results at a fixed 99% quality target** (the experiment's, set before the gate's `quality_target`, which would pick about 97.6% here). Δ is the mean of 300 paired bootstraps against the refit without new labels, so it differs slightly from the difference of the point estimates:
 
 | Labels added | Rate | Saved @ 99% | ROC-AUC vs SPROUT verdict | Δ vs none [95% interval] | Wins |
 |---|---|---|---|---|---|
@@ -86,7 +86,9 @@ Run fully locally, at $0, on an RTX 4060 laptop GPU with Ollama.
 | **judge `score < 4`, once (the shipped rule)** | 31% | **53.4%** | **0.693** | **+10.4 [+0.3, +21.2]** | **294/300** |
 | judge `score < 4`, 10× weight | 31% | 59.7% | 0.698 | +18.5 [+5.2, +33.8] | 297/300 |
 | judge `score < 3`, once | 8% | 40.8% | 0.659 | +0.0 [−9.1, +10.4] | 147/300 |
+| judge `score < 3`, 10× weight | 8% | 50.6% | 0.658 | +7.6 [−5.0, +20.3] | 269/300 |
 | SPROUT's own verdict, once | 7% | 39.0% | 0.654 | −3.0 [−12.4, +9.5] | 67/300 |
+| SPROUT's own verdict, 10× weight | 7% | 48.0% | 0.687 | +6.9 [−4.3, +21.1] | 256/300 |
 | perfect routing (ceiling) | n/a | 90.6% | 1.000 | +47.3 | 300/300 |
 
 ROC-AUC here is a different measure from the AUC column above. It is the chance that a prompt SPROUT says needs the strong model (cheap < 0.5 ≤ strong) scores above one that doesn't.
@@ -99,7 +101,7 @@ ROC-AUC here is a different measure from the AUC column above. It is the chance 
 
 **Caveats:**
 - **One traffic source:** the labeled prompts and the eval prompts both come from SPROUT. Part of the gain may simply come from the prompts being in-domain. SPROUT's own labels not helping argues against that, but doesn't rule it out.
-- **Uncorrected comparisons:** seven setups are compared, with no correction for multiple comparisons.
+- **Uncorrected comparisons:** seven setups are compared against the baseline, with no correction for multiple comparisons.
 - **Not in this repo:** the experiment scripts, which need Ollama and local models.
 
 ## Limitations

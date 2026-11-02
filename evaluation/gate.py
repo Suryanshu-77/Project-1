@@ -83,7 +83,7 @@ def should_promote(champion: GateResult, challenger: GateResult) -> tuple[bool, 
     chall_cost = -math.inf if challenger.cost_saved is None else challenger.cost_saved
 
     if chall_cost < champ_cost:
-        # None (never reaches 95% quality) is displayed as "None", not -inf
+        # None (never reaches the target) is displayed as "None", not -inf
         chall, champ = _pct(challenger.cost_saved), _pct(champion.cost_saved)
         return False, f"rejected: cost saved ({chall}) worse than champion ({champ})"
 
