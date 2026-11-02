@@ -1,0 +1,36 @@
+name: Bug report
+description: Something in tierwise doesn't work as documented
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what you got instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: How to reproduce
+      description: The request (redact keys and private prompts), the command, or a failing test.
+      render: shell
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and headers
+      description: Gateway log lines, and the X-Tierwise-* response headers if you have them.
+      render: text
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: "`pip show tierwise`, or the commit if you run from a checkout"
+    validations:
+      required: true
+  - type: dropdown
+    id: providers
+    attributes:
+      label: Providers involved
+      multiple: true
+      options: [Anthropic, OpenAI, Gemini, Ollama, the compose demo stack, none]

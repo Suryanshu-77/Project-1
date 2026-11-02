@@ -21,3 +21,15 @@ particular interest:
 - bypassing API-key authentication, budgets or rate limits
 - leaking provider keys, tierwise keys or stored payloads (logs, errors, metrics, traces)
 - a request that makes the gateway call a host other than a configured provider
+
+## Deploying safely
+
+- **Set `TIERWISE_REQUIRE_KEY=true`** anywhere other than your own machine. Without it, anyone
+  who can reach the gateway spends your provider keys, and budgets and rate limits aren't
+  enforced.
+- **`/metrics` has no auth**, by Prometheus convention. Keep port 8000 off the public internet,
+  or put a proxy in front of it.
+- **Payload storage is opt-in.** With `TIERWISE_STORE_PAYLOADS=true`, prompts and answers are
+  kept in your database for the request log and flywheel samples.
+- **The compose stack is a local demo,** not a hardened deployment: every port is bound to
+  127.0.0.1 and the database password is fixed.
