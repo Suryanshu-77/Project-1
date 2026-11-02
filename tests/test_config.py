@@ -40,3 +40,24 @@ def test_missing_explicit_registry_fails_startup(tmp_path: Path) -> None:
     app = create_app(_settings(registry_path=str(tmp_path / "nope.yaml")))
     with pytest.raises(RegistryError, match="nope.yaml"), TestClient(app):
         pass
+
+
+def test_import_survives_missing_home(tmp_path: Path) -> None:
+    """Containers under an arbitrary uid have no passwd entry and often no HOME."""
+    import subprocess
+    import sys
+    import tempfile
+
+    code = """
+from pathlib import Path
+
+def no_home(cls=None):
+    raise RuntimeError("Could not determine home directory.")
+
+Path.home = classmethod(no_home)
+import tierwise.config as config
+print(config.CACHE_ROUTER_DIR)
+"""
+    result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr[-400:]
+    assert result.stdout.strip().startswith(tempfile.gettempdir())
