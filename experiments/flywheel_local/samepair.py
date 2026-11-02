@@ -31,7 +31,12 @@ from stage0 import build_pool, gold  # noqa: E402
 
 from evaluation.datasets import SPROUT_REPO, load_sprout  # noqa: E402
 from evaluation.metrics import EvalRow  # noqa: E402
-from tierwise.flywheel import _transcript, judge_messages, parse_score  # noqa: E402
+
+try:  # this run used the v1 judge (one score); rerun it from commit f121ae2
+    from tierwise.flywheel import _transcript, judge_messages, parse_score  # noqa: E402
+except ImportError as exc:
+    raise SystemExit("this script reproduces a tierwise-judge-v1 run: "
+                     "git checkout f121ae2 to rerun it") from exc
 from tierwise.providers.base import ProviderError  # noqa: E402
 from tierwise.providers.openai import OpenAIProvider  # noqa: E402
 from tierwise.reliability.retry import RetryPolicy, with_retries  # noqa: E402

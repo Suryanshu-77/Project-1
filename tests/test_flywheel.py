@@ -10,7 +10,13 @@ import pytest
 
 from tierwise import flywheel
 from tierwise.__main__ import main
-from tierwise.flywheel import JUDGE_MARKER, contrast_for, label_pending, parse_score
+from tierwise.flywheel import (
+    JUDGE_MARKER,
+    contrast_for,
+    label_pending,
+    needs_strong,
+    parse_scores,
+)  # fmt: skip
 from tierwise.providers.base import Provider
 from tierwise.providers.openai import OpenAIProvider
 from tierwise.registry import ModelSpec, Registry
@@ -35,14 +41,29 @@ REGISTRY = Registry(
 )
 
 
-def _upstream(judge_reply: str = '{"score": 2}', calls: list[dict[str, Any]] | None = None):  # type: ignore[no-untyped-def]
+CHEAP_SHORT = {"small": 2, "medium": 5, "large": 5}  # the small model's answer falls short
+
+
+def _verdict(body: dict[str, Any], scores: dict[str, int]) -> str:
+    """A judge that scores each answer by the model that wrote it, wherever it is shown."""
+    text = body["messages"][-1]["content"]
+    a, b = re.search(r"Answer A:\n(.*?)\n\nAnswer B:\n(.*?)\n\n", text, re.DOTALL).groups()  # type: ignore[union-attr]
+    by_model = {f"answer from {m}": s for m, s in scores.items()}
+    return json.dumps({"a": by_model[a], "b": by_model[b]})
+
+
+def _upstream(judge_reply: str | None = None, calls: list[dict[str, Any]] | None = None,  # type: ignore[no-untyped-def]
+              scores: dict[str, int] = CHEAP_SHORT):  # fmt: skip
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         if calls is not None:
             calls.append(body)
         first = body["messages"][0]
         judging = first["role"] == "system" and JUDGE_MARKER in first["content"]
-        content = judge_reply if judging else f"answer from {body['model']}"
+        if not judging:
+            content = f"answer from {body['model']}"
+        else:
+            content = judge_reply if judge_reply is not None else _verdict(body, scores)
         return httpx.Response(200, json={
             "id": "x", "model": body["model"], "created": 1,
             "choices": [{"index": 0, "finish_reason": "stop",
@@ -94,7 +115,8 @@ async def test_cheap_routed_gets_flagship_contrast_and_label(log: RequestLog) ->
     assert (run.labeled, run.failed, run.left) == (1, 0, 0)
     assert labeled.status == "labeled" and labeled.contrast_model == "large"
     assert labeled.contrast_answer == "answer from large"
-    assert labeled.judge_score == 2 and labeled.needs_strong is True
+    assert (labeled.judge_score, labeled.judge_score_strong) == (2, 5)  # cheap, strong
+    assert labeled.needs_strong is True
     # contrast on large (2000 tokens at $20/M) plus the judge on large: $0.04 + $0.04
     assert labeled.label_cost_usd == pytest.approx(0.08) and run.spent_usd == pytest.approx(0.08)
     assert labeled.labeled_ts == NOV
@@ -102,9 +124,43 @@ async def test_cheap_routed_gets_flagship_contrast_and_label(log: RequestLog) ->
 
 async def test_flagship_routed_contrasts_cheapest_basic(log: RequestLog) -> None:
     await _seed(log, _sample(0, routed="large"))
-    await label_pending(log, REGISTRY, _providers(_upstream('{"score": 5}')), _judge(), 100.0, 10)
+    upstream = _upstream(scores={"small": 5, "large": 5})
+    await label_pending(log, REGISTRY, _providers(upstream), _judge(), 100.0, 10)
     [labeled] = await log.labeled_samples()
     assert labeled.contrast_model == "small" and labeled.needs_strong is False
+
+
+@pytest.mark.parametrize("routed", ["small", "large"])
+async def test_both_answers_wrong_does_not_need_the_strong_model(
+    log: RequestLog, routed: str
+) -> None:
+    """The flagship can't fix a prompt it fails too: paying for it would buy nothing. A judge
+    scoring only the cheaper answer labeled these 'needs strong' (stage 1 of the flywheel
+    experiment: 5 of 20 identical pairs where gpt-4o itself was wrong)."""
+    await _seed(log, _sample(0, routed=routed))
+    upstream = _upstream(scores={"small": 1, "large": 1})
+    await label_pending(log, REGISTRY, _providers(upstream), _judge(), 100.0, 10)
+    [labeled] = await log.labeled_samples()
+    assert (labeled.judge_score, labeled.judge_score_strong) == (1, 1)
+    assert labeled.needs_strong is False
+
+
+def test_needs_strong_never_fires_on_equal_scores() -> None:
+    assert not any(needs_strong(s, s) for s in range(1, 6))  # identical answers, any quality
+
+
+def test_needs_strong_when_only_the_cheap_answer_falls_short() -> None:
+    assert needs_strong(2, 5) and needs_strong(1, 5)
+    assert not needs_strong(5, 3) and not needs_strong(4, 2)  # the cheaper answer was better
+
+
+def test_needs_strong_is_monotonic() -> None:
+    """A worse cheap answer, or a better strong one, can only make the label more 'strong'."""
+    for cheap in range(1, 6):
+        for strong in range(1, 6):
+            if needs_strong(cheap, strong):
+                assert cheap == 1 or needs_strong(cheap - 1, strong)
+                assert strong == 5 or needs_strong(cheap, strong + 1)
 
 
 TEXT = ChatRequest.model_validate({"messages": [{"role": "user", "content": "hi"}]})
@@ -161,16 +217,16 @@ async def test_no_fitting_contrast_fails_before_any_call(log: RequestLog) -> Non
 
 
 @pytest.mark.parametrize(
-    "bad", ["not json", '{"score": 9}', '{"score": "high"}', "{}", '{"score": Infinity}',
-            '{"score": NaN}', '{"score": 1e400}']
+    "bad", ["not json", '{"a": 9, "b": 5}', '{"a": "high", "b": 5}', "{}", '{"a": 5}',
+            '{"score": 5}', '{"a": Infinity, "b": 5}', '{"a": 5, "b": NaN}', '{"a": 1e400, "b": 5}']
 )
-def test_parse_score_rejects_bad_replies(bad: str) -> None:
+def test_parse_scores_rejects_bad_replies(bad: str) -> None:
     with pytest.raises(ValueError):
-        parse_score(bad)
+        parse_scores(bad)
 
 
-def test_parse_score_accepts_fenced_json() -> None:
-    assert parse_score('```json\n{"score": 4}\n```') == 4
+def test_parse_scores_accepts_fenced_json() -> None:
+    assert parse_scores('```json\n{"a": 4, "b": 5}\n```') == (4, 5)
 
 
 async def test_bad_judge_json_marks_failed_and_continues(log: RequestLog) -> None:
@@ -201,9 +257,12 @@ async def test_budget_counts_earlier_spend_this_month(log: RequestLog) -> None:
 
 def test_judge_order_is_seeded() -> None:
     def order(seed: str) -> bool:  # True when the cheaper answer is shown first
-        text = flywheel.judge_messages("q", "CHEAP", "STRONG", seed=seed)[-1].content
+        messages, cheap_key = flywheel.judge_messages("q", "CHEAP", "STRONG", seed=seed)
+        text = messages[-1].content
         assert isinstance(text, str)
-        return text.index("CHEAP") < text.index("STRONG")
+        cheap_first = text.index("CHEAP") < text.index("STRONG")
+        assert cheap_key == ("a" if cheap_first else "b")  # the caller maps scores back right
+        return cheap_first
 
     assert order("s7") == order("s7")  # a re-run judges in the same order
     assert {order(f"s{i}") for i in range(20)} == {True, False}  # both positions get used
@@ -228,6 +287,8 @@ def test_cli_flywheel_label_prints_summary_only(
                                  stopped_by_budget=True)  # fmt: skip
 
     monkeypatch.setattr(flywheel, "label_pending", fake)
+    monkeypatch.chdir(tmp_path)  # no developer .env: it could name another judge model
+    monkeypatch.setenv("TIERWISE_REGISTRY", str(Path(__file__).parents[1] / "config/registry.yaml"))
     monkeypatch.setenv("TIERWISE_DB_URL", f"sqlite+aiosqlite:///{(tmp_path / 'c.db').as_posix()}")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     assert main(["flywheel", "label", "--limit", "5"]) == 0
@@ -274,24 +335,24 @@ async def test_transient_judge_error_is_retried(log: RequestLog) -> None:
     assert (run.labeled, run.failed, len(judged)) == (1, 0, 2)
 
 
-def test_parse_score_rejects_bool_accepts_integral_float() -> None:
+def test_parse_scores_rejects_bool_accepts_integral_float() -> None:
     with pytest.raises(ValueError):
-        parse_score('{"score": true}')  # bool is an int subclass in Python
-    assert parse_score('{"score": 4.0}') == 4
+        parse_scores('{"a": true, "b": 5}')  # bool is an int subclass in Python
+    assert parse_scores('{"a": 4.0, "b": 5}') == (4, 5)
     with pytest.raises(ValueError):
-        parse_score('{"score": 3.5}')
+        parse_scores('{"a": 3.5, "b": 5}')
 
 
-@pytest.mark.parametrize("reply", ['{"score": "5"}', '{"score": " 5 "}', '{"score": "5.0"}'])
-def test_parse_score_accepts_a_quoted_number(reply: str) -> None:
-    assert parse_score(reply) == 5  # mistral:7b quoted 216 of 744 scores in a real run
+@pytest.mark.parametrize("reply", ['{"a": "5", "b": 5}', '{"a": " 5 ", "b": 5}',
+                                   '{"a": "5.0", "b": 5}'])  # fmt: skip
+def test_parse_scores_accepts_a_quoted_number(reply: str) -> None:
+    assert parse_scores(reply) == (5, 5)  # mistral:7b quoted 216 of 744 scores in a real run
 
 
-@pytest.mark.parametrize("bad", ['{"score": "3.5"}', '{"score": "Infinity"}', '{"score": "nan"}',
-                                 '{"score": "9"}', '{"score": ""}', '{"score": "true"}'])
-def test_parse_score_holds_quoted_numbers_to_the_same_rules(bad: str) -> None:
+@pytest.mark.parametrize("bad", ['"3.5"', '"Infinity"', '"nan"', '"9"', '""', '"true"'])
+def test_parse_scores_holds_quoted_numbers_to_the_same_rules(bad: str) -> None:
     with pytest.raises(ValueError):
-        parse_score(bad)
+        parse_scores(f'{{"a": 5, "b": {bad}}}')
 
 
 def test_non_baseline_flagship_gets_a_basic_contrast() -> None:
@@ -305,6 +366,6 @@ def test_non_baseline_flagship_gets_a_basic_contrast() -> None:
     assert contrast_for(other, TEXT, registry, {"openai"}) == registry.get("small")
 
 
-def test_parse_score_error_shows_what_the_judge_wrote() -> None:
+def test_parse_scores_error_shows_what_the_judge_wrote() -> None:
     with pytest.raises(ValueError, match="'5_0'"):
-        parse_score('{"score": "5_0"}')  # float() reads it as 50.0
+        parse_scores('{"a": "5_0", "b": 5}')  # float() reads it as 50.0

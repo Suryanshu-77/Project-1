@@ -145,13 +145,23 @@ def test_fake_upstream_judges_hard_prompts_low() -> None:
     assert module.JUDGE_MARKER == JUDGE_MARKER
     client = TestClient(module.app)
 
-    def score(prompt: str) -> int:
-        messages = [m.model_dump() for m in judge_messages(f"user: {prompt}", "a", "b", "s1")]
-        reply = client.post("/v1/chat/completions", json={"model": "large", "messages": messages})
-        return int(json.loads(reply.json()["choices"][0]["message"]["content"])["score"])
+    def answer(model: str) -> str:
+        body = {"model": model, "messages": [{"role": "user", "content": "hi"}]}
+        return str(client.post("/v1/chat/completions", json=body).json()["choices"][0]
+                   ["message"]["content"])  # fmt: skip
 
-    assert score("Design a billing architecture") == 2
-    assert score("Translate 'hello' into Spanish") == 5
+    def scores(prompt: str) -> tuple[int, int]:  # (cheap, strong)
+        messages, cheap_key = judge_messages(f"user: {prompt}", answer("small"), answer("large"),
+                                             "s1")  # fmt: skip
+        body = {"model": "large", "messages": [m.model_dump() for m in messages]}
+        reply = json.loads(client.post("/v1/chat/completions", json=body)
+                           .json()["choices"][0]["message"]["content"])  # fmt: skip
+        strong_key = "b" if cheap_key == "a" else "a"
+        return reply[cheap_key], reply[strong_key]
+
+    assert answer("small") != answer("large")  # each model's answer is its own
+    assert scores("Design a billing architecture") == (2, 5)  # the small model falls short
+    assert scores("Translate 'hello' into Spanish") == (5, 5)
 
 
 def test_compose_enables_payloads() -> None:

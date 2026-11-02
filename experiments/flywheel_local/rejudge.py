@@ -22,7 +22,11 @@ from pathlib import Path
 
 import httpx
 
-from tierwise.flywheel import _transcript, judge_messages, parse_score
+try:  # this run used the v1 judge (one score); rerun it from commit f121ae2
+    from tierwise.flywheel import _transcript, judge_messages, parse_score
+except ImportError as exc:
+    raise SystemExit("this script reproduces a tierwise-judge-v1 run: "
+                     "git checkout f121ae2 to rerun it") from exc
 from tierwise.providers.base import ProviderError
 from tierwise.providers.openai import OpenAIProvider
 from tierwise.registry import load_registry
