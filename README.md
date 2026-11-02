@@ -12,10 +12,11 @@ that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 - **Benchmark:** on 3,943 held-out prompts, tierwise's router keeps 95% of GPT-4's quality at
   44% of its cost (random routing: 63%).
 - **Data flywheel:** the router retrains on labels from your own traffic, behind a
-  champion/challenger gate. Follow-up checks showed an early +10-point result wasn't robust.
-  In a pre-registered test, even perfect labels helped only at 2,000 of them, weighted ×5. That
-  test also found a judge scoring only the cheaper answer mislabels prompts both models fail.
-  0.10 fixes that.
+  champion/challenger gate. In a pre-registered test on 29,055 untouched prompts, about 2,000
+  labels from Claude Haiku raised cost saved at 99% quality by **5.8 points [+1.1, +10.8]**, once
+  the judge's "falls short" cut was calibrated. With the default cut the same labels made routing
+  worse. The tests behind this also found, and 0.10 fixed, a judge that mislabeled prompts both
+  models fail.
 - **Method, out-of-distribution results and limitations:** [BENCHMARK.md](BENCHMARK.md).
 
 ![The tierwise Grafana dashboard under 15 minutes of mixed demo traffic](docs/benchmark/dashboard.png)
