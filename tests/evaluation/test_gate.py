@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from evaluation.gate import GateResult, evaluate_classifier, should_promote
+from evaluation.gate import GateResult, evaluate_classifier, quality_target, should_promote
 from evaluation.metrics import EvalRow
 
 
@@ -16,7 +16,7 @@ def test_evaluate_classifier_scores_rows() -> None:
     result = evaluate_classifier(p_rows, rows, critical_misroutes=2)
     assert result.critical_misroutes == 2
     assert result.auc == 1.0  # every hard prompt scored above every easy one
-    assert result.cost_saved_95 is not None and result.cost_saved_95 > 0.4
+    assert result.cost_saved is not None and result.cost_saved > 0.4
 
 
 def test_auc_is_none_with_one_class() -> None:
@@ -28,15 +28,42 @@ def test_random_scores_save_less_than_perfect_ones() -> None:
     needs = [i % 3 == 0 for i in range(60)]
     perfect = evaluate_classifier(np.array([float(h) for h in needs]), _rows(needs), 0)
     noise = evaluate_classifier(np.random.default_rng(0).random(60), _rows(needs), 0)
-    assert perfect.cost_saved_95 is not None
-    assert noise.cost_saved_95 is None or noise.cost_saved_95 < perfect.cost_saved_95
+    assert perfect.cost_saved is not None
+    assert noise.cost_saved is None or noise.cost_saved < perfect.cost_saved
 
 
-GOOD = GateResult(cost_saved_95=0.50, critical_misroutes=0, auc=0.80)
+def _easy_rows(n: int = 200) -> list[EvalRow]:
+    """SPROUT-like traffic: the cheap model fails 1 prompt in 20, so all-cheap reaches 95%."""
+    return [EvalRow(f"p{i}", 0.0 if i % 20 == 0 else 1.0, 1.0, 0.08, 1.0) for i in range(n)]
+
+
+def test_target_separates_perfect_from_random_on_easy_traffic() -> None:
+    rows = _easy_rows()
+    perfect = evaluate_classifier(np.array([1.0 - r.q_cheap for r in rows]), rows, 0)
+    noise = evaluate_classifier(np.random.default_rng(0).random(len(rows)), rows, 0)
+    constant = evaluate_classifier(np.zeros(len(rows)), rows, 0)
+    assert perfect.cost_saved is not None and noise.cost_saved is not None
+    assert perfect.cost_saved > noise.cost_saved + 0.1  # at 95% all three would tie
+    assert perfect.cost_saved > (constant.cost_saved or 0.0)
+    assert perfect.target == noise.target  # same rows, same target
+
+
+@pytest.mark.parametrize("rows", [
+    _easy_rows(), _rows([True, False] * 10),
+    [EvalRow("same", 1.0, 1.0, 0.1, 1.0)] * 5,  # cheap already matches strong everywhere
+    [EvalRow("better", 1.0, 0.5, 0.1, 1.0)] * 5,  # cheap beats strong: all-cheap is above 1
+])  # fmt: skip
+def test_target_is_reachable(rows: list[EvalRow]) -> None:
+    target = quality_target(rows)
+    assert 0.0 < target <= 1.0  # all-strong is quality 1.0, so a target <= 1 always has a value
+    assert evaluate_classifier(np.zeros(len(rows)), rows, 0).cost_saved is not None
+
+
+GOOD = GateResult(cost_saved=0.50, critical_misroutes=0, auc=0.80)
 
 
 def test_rejects_any_critical_misroute() -> None:
-    better_but_unsafe = GateResult(cost_saved_95=0.70, critical_misroutes=1, auc=0.90)
+    better_but_unsafe = GateResult(cost_saved=0.70, critical_misroutes=1, auc=0.90)
     promote, reason = should_promote(GOOD, better_but_unsafe)
     assert not promote and reason
 

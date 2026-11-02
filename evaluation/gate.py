@@ -1,9 +1,9 @@
 """Champion/challenger gate for the flywheel retrain (spec §5.2).
 
-Both classifiers are scored on the same rows: how much of the all-strong cost they save at 95%
-of its quality (the curve over every threshold), and how many of the labeled hard prompts the
-deployed router (rules plus that classifier) would send to a basic model; the caller counts
-those through the gateway's own route() and select().
+Both classifiers are scored on the same rows: how much of the all-strong cost they save at a
+quality target set from those rows (the curve over every threshold; see quality_target), and how
+many of the labeled hard prompts the deployed router (rules plus that classifier) would send to
+a basic model; the caller counts those through the gateway's own route() and select().
 """
 
 import math
@@ -17,10 +17,11 @@ from evaluation.metrics import EvalRow, cost_saved_at, sweep
 
 @dataclass(frozen=True)
 class GateResult:
-    cost_saved_95: float | None  # None: no threshold reaches 95% of all-strong quality
+    cost_saved: float | None  # at `target`; None: no threshold reaches it
     critical_misroutes: int  # through the deployed router (rules can only raise difficulty)
     auc: float | None  # None when the rows hold a single class
     classifier_misroutes: int = 0  # hard prompts the classifier alone calls easy
+    target: float = 0.95  # the share of all-strong quality cost_saved was measured at
 
 
 def _auc(scores: np.ndarray, positive: np.ndarray) -> float | None:
@@ -32,6 +33,21 @@ def _auc(scores: np.ndarray, positive: np.ndarray) -> float | None:
     return float(wins / (len(pos) * len(neg)))
 
 
+def quality_target(rows: Sequence[EvalRow]) -> float:
+    """The share of all-strong quality the gate measures cost saved at, from the eval rows.
+
+    A fixed 95% saturates on easy traffic: when sending every prompt to the cheap model already
+    reaches it, every classifier (perfect, random or constant) saves the same, and the gate
+    can't tell them apart. Champion and challenger share the rows, so they share the target.
+    """
+    strong = sum(r.q_strong for r in rows)
+    all_cheap = sum(r.q_cheap for r in rows) / strong if strong else 1.0
+    
+    # Close 50% of the gap between all-cheap and all-strong (1.0), floored at 0.95 and capped at 1.0
+    target = all_cheap + 0.5 * (1.0 - all_cheap)
+    return min(1.0, max(0.95, target))
+
+
 def evaluate_classifier(
     p_rows: np.ndarray,
     rows: Sequence[EvalRow],
@@ -40,11 +56,13 @@ def evaluate_classifier(
 ) -> GateResult:
     p_rows = np.asarray(p_rows, dtype=np.float64)
     needs_strong = np.array([row.q_cheap < 0.5 <= row.q_strong for row in rows])
+    target = quality_target(rows)
     return GateResult(
-        cost_saved_95=cost_saved_at(sweep(rows, p_rows), 0.95),
+        cost_saved=cost_saved_at(sweep(rows, p_rows), target),
         critical_misroutes=critical_misroutes,
         auc=_auc(p_rows, needs_strong),
         classifier_misroutes=classifier_misroutes,
+        target=target,
     )
 
 
@@ -61,16 +79,16 @@ def should_promote(champion: GateResult, challenger: GateResult) -> tuple[bool, 
     if challenger.critical_misroutes > 0:
         return False, f"rejected: {challenger.critical_misroutes} critical misroutes"
 
-    champ_cost = -math.inf if champion.cost_saved_95 is None else champion.cost_saved_95
-    chall_cost = -math.inf if challenger.cost_saved_95 is None else challenger.cost_saved_95
+    champ_cost = -math.inf if champion.cost_saved is None else champion.cost_saved
+    chall_cost = -math.inf if challenger.cost_saved is None else challenger.cost_saved
 
     if chall_cost < champ_cost:
         # None (never reaches 95% quality) is displayed as "None", not -inf
-        chall, champ = _pct(challenger.cost_saved_95), _pct(champion.cost_saved_95)
+        chall, champ = _pct(challenger.cost_saved), _pct(champion.cost_saved)
         return False, f"rejected: cost saved ({chall}) worse than champion ({champ})"
 
     if chall_cost > champ_cost:
-        champ = _pct(champion.cost_saved_95)
+        champ = _pct(champion.cost_saved)
         return True, f"promoted: cost saved {chall_cost * 100:.1f}% vs {champ}"
 
     # Cost is tied. Use AUC as a tiebreaker.
