@@ -78,9 +78,9 @@ def saved_at(cols: tuple[np.ndarray, ...], scores: np.ndarray, target: float) ->
     return float(1.0 - (cf[i - 1] + t * (cf[i] - cf[i - 1])))
 
 
-def main() -> None:
-    train_rows, _ = load_sprout("train")
-    test_rows, _ = load_sprout("test")
+def build_pool(train_rows: list[EvalRow], test_rows: list[EvalRow]
+               ) -> tuple[list[EvalRow], set[str], set[str]]:  # fmt: skip
+    """(pool, exclusions, prompts in both splits): the label pool, in its fixed shuffled order."""
     both = {normalize(r.prompt) for r in train_rows} & {normalize(r.prompt) for r in test_rows}
     exclude = both | {normalize(p) for p in retrain._critical(retrain.CRITICAL)}
     pool, seen = [], set()
@@ -89,7 +89,13 @@ def main() -> None:
             seen.add(key)
             pool.append(r)
     random.Random(0).shuffle(pool)
-    pool = pool[: max(SIZES)]  # nested: the first 500 are in the 1,000, and so on
+    return pool[: max(SIZES)], exclude, both  # nested: the first 500 are in the 1,000, ...
+
+
+def main() -> None:
+    train_rows, _ = load_sprout("train")
+    test_rows, _ = load_sprout("test")
+    pool, exclude, both = build_pool(train_rows, test_rows)
     dev = [r for r in test_rows if usable(r.prompt, exclude) and half(r.prompt) == "dev"]
     print(f"train/test overlap excluded: {len(both)}; pool {len(pool)}; dev rows {len(dev)}, "
           f"gold positives {sum(map(gold, dev))}")  # fmt: skip
