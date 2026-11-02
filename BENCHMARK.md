@@ -115,9 +115,51 @@ ROC-AUC here is a different measure from the AUC column above. It is the chance 
 - **The flaw it exposed:** labels from a judge that scores only the cheaper answer call prompts that *both* models fail "needs strong", so the router learns to pay for the flagship where it buys nothing.
 - **The fix, in 0.10:** the judge scores both answers, and a prompt needs the strong model only when the cheaper answer falls short and the stronger one doesn't.
 
-Rerunning stage 1 and stage 2 under that rule needs a re-specified protocol first. The identical-answer check, the order-flip check and the AUC cutoff are all defined for one score. The run itself is about 2,000 judge calls, about ₹80 at this run's measured rate.
+### The two-score judge: Protocols 2 and 3
 
-**Spent in all:** ₹33.79, through AICredits ($0.31 at list price).
+**[Protocol 2](experiments/flywheel_local/PROTOCOL-2.md)** re-ran the pilot with tierwise 0.10's
+judge, which scores both answers and labels `cheap < 4 <= strong`. It cost $0.17.
+- **The judge behaved:** identical answers never asked for the strong model (20/20), swapping A
+  and B kept the label in 19 of 20 pairs, and the score gap tracked SPROUT at AUC **0.914**.
+- **Its label rate failed:** 21.5% against G's 6.5%, so the pilot was **NO-GO**. Haiku grades
+  harder than SPROUT's judge: 42 of its 86 positives were a 3 against a 4, where SPROUT scored
+  the cheap answer fine.
+
+**[Protocol 3](experiments/flywheel_local/PROTOCOL-3.md)** changed only the cut point, to
+`cheap < 2` and `strong >= 4`.
+- **How the cut was chosen:** from the stored pilot. It agrees best with G (F1 0.77) among the
+  cuts that pass the rate check.
+- **Stage 1:** the stored judgments re-checked under the new cut passed every check, at no cost.
+- **Stage 2:** Haiku judged the remaining 1,600 pairs ($0.64). Then came **the one pre-registered
+  test, on 29,055 SPROUT prompts that no step had touched**:
+
+| Labels on the same 2,000 prompts (weight 5) | Label rate | Saved @ 99% | Δ vs none [95% interval] | Shuffled labels | Verdict |
+|---|---|---|---|---|---|
+| none | n/a | 39.3% | n/a | n/a | n/a |
+| **Haiku, `cheap < 2 <= 4 <= strong` (the test)** | 4.9% | **44.7%** | **+5.8 [+1.1, +10.8]** | −6.9 | **SUCCESS** |
+| SPROUT's own G (the ceiling) | 7.1% | 55.1% | +15.7 [+10.7, +21.0] | −14.0 | passes |
+| Haiku, `cheap < 4 <= strong` (0.10's shipped cut, comparison only) | 21.4% | 28.5% | **−10.9 [−15.6, −6.2]** | −14.2 | n/a |
+
+The test row clears both pre-registered rules. Its interval is above 0, and it beats the shuffled
+control by 12.7 points against a 5.3-point retraining noise band.
+
+**What it shows:**
+- **The flywheel can improve the router.** About 2,000 labels from a paid judge raised cost saved
+  at 99% quality by 5.8 points, a little over a third of what perfect labels gave.
+- **The cut point decides the sign.** The same judgments with 0.10's shipped cut made the router
+  significantly *worse*. A stricter judge needs a stricter "falls short", so the cut should be
+  calibrated per judge rather than fixed at 4.
+- **AUC went down, not up** (0.649 → 0.631). The labels improved the decision that matters at a 99%
+  target, not the overall ranking.
+
+**Caveats:**
+- **c = 2 was chosen from 400 pilot pairs.** The untouched confirm set guards the test, but this
+  shows c = 2 works for Claude Haiku on gpt-4o-mini vs gpt-4o, not that it transfers.
+- **"Quality" means SPROUT's LLM judge.** It is single-turn, two-model traffic.
+- **Weight 5 and 2,000 labels were fixed by stage 0.** Fewer labels, or weight 1, didn't help even
+  with perfect labels.
+
+**Spent in all:** $1.12 at list price, about ₹124 through AICredits, for every paid run above: ₹33.79 before Protocol 2 (from the dashboard), then about ₹90 for Protocols 2 and 3 (estimated from the measured rate).
 
 ## Limitations
 

@@ -45,6 +45,9 @@ uv run --group retrain --group train python experiments/flywheel_local/analyze.p
 | `analyze.py --judge MODEL` | Compares those labels with mistral's on the same prompts | free |
 | `stage0.py` | Stage 0: can SPROUT's own perfect labels help at all, and at what size? | free |
 | `samepair.py pilot` | Stage 1: Haiku judges SPROUT's gpt-4o-mini vs gpt-4o answers, plus the identical-answer and order-flip checks (`--dry-run` makes no calls) | $0.16 |
+| `samepair2.py check` | Must reproduce stage 0 on the dev half before the confirm set is touched | free |
+| `samepair2.py pilot [--cut c]` | [Protocol 2](PROTOCOL-2.md)/[3](PROTOCOL-3.md) stage 1 with tierwise 0.10's two-score judge | $0.17 |
+| `samepair2.py test [--cut c]` | Stage 2: the remaining 1,600 pairs and the single test on the confirm set (refuses without a pilot GO) | $0.64 |
 
 `rejudge.py` and `samepair.py` ran with the v1 judge, which scored only the cheaper answer. tierwise
 0.10 replaced it, so they refuse to run on later versions; `git checkout f121ae2` reruns them.
