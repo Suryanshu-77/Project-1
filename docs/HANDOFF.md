@@ -1,6 +1,6 @@
 # tierwise: project handoff
 
-*State as of 2026-11-02: M8 merged and released; M9 being planned on `feat/flywheel`. Start a new chat by giving Claude this file. The authoritative
+*State as of 2026-11-02: M0–M9 merged; 0.9.0 is on PyPI; 0.9.1 (hardening) is on `fix/hardening`. Start a new chat by giving Claude this file. The authoritative
 detail lives in the repo: the spec, the per-milestone plans, `BENCHMARK.md`, `README.md` and
 `git log`. This file is the map.*
 
@@ -40,10 +40,11 @@ expected to answer it well, across Anthropic, OpenAI, Gemini and local Ollama. I
 | M7a | API keys + CLI, token-bucket rate limits, reserve/settle monthly budgets | #9 | merged |
 | M7b | Prometheus `/metrics`, OTel spans, Grafana dashboard, compose + Postgres | #10 | merged (all 5 CI checks green, incl. Postgres + `compose-smoke`) |
 | M8 | Packaged data, `tierwise fetch-model`, cancellation fix, release workflow, demo, docs | #11 | merged; **tierwise 0.8.0 is live on PyPI**, and the repo is public |
-| M9a | Shadow sampling (3 opt-ins), `tierwise flywheel label` (contrast + judge, monthly budget), fake judge | feat/flywheel | built |
-| M9b | `training.retrain`, champion/challenger gate (critical misroutes on the deployed hybrid), versioned promotion, `flywheel-e2e` CI job, 0.9.0 | feat/retrain | built |
+| M9a | Shadow sampling (3 opt-ins), `tierwise flywheel label` (contrast + judge, monthly budget), fake judge | #12 | merged |
+| M9b | `training.retrain`, gate (`decide`: held-out minimum + classifier non-regression + `should_promote`), write-once versions, `router.json` names its weights (atomic promotion), `flywheel-e2e` CI job | #13 | merged; **0.9.0 is live on PyPI** |
+| 0.9.1 | Hardening: contrast must `fits` the request, streams without usage are sampled, no-home startup, staged version folders, download cap, strict judge score | fix/hardening | built |
 
-`main` is at `e453895`: M0 through M7 are all merged. Version is now 0.8.0, and versions track milestones.
+`main` has M0 through M9 merged. PyPI has 0.8.0 and 0.9.0, and versions track milestones.
 
 ## Architecture (the request path)
 
@@ -106,6 +107,7 @@ uv run python scripts/compose_smoke.py    # M7 exit check
   - the `CancelledError` handler that releases the reservation (M8)
   - `sample_rate`: ×5 below confidence 0.5, clamped (M9a)
   - `should_promote`: safety, then cost saved, with AUC breaking ties (M9b)
+  - `contrast_for`: baseline unless the baseline answered, and it must `fits` the request (0.9.1)
 - **Per milestone:**
   1. The superpowers flow: brainstorming → spec → `writing-plans` → **Native** execution
      with `executing-plans` (ledger under `.superpowers/sdd/<plan>/`, `task-start` and
@@ -128,19 +130,22 @@ uv run python scripts/compose_smoke.py    # M7 exit check
 
 ## Open threads and backlog
 
-- **Next:** merge M9b, then tag `v0.9.0` (the user approves the publish job). All planned milestones
-  are then done; the deferred minors in each PR are the backlog.
+- **Next:** merge 0.9.1 and tag `v0.9.1`. Every planned milestone is then done.
+  - **Biggest open item:** prove the flywheel on real models. A real judge (API keys, about $5–10, or a free
+    local Ollama judge) shows whether a retrained router beats the shipped one; with the fake judge,
+    the gate correctly rejects every challenger as overfit.
+  - **Small backlog:** the deferred minors in PRs #11–#13 that the 0.9.1 hardening didn't take.
 - **Known weaknesses worth knowing (each documented):**
   - **Out of distribution (SPROUT):** the learned router loses to rules at 98–99% quality.
-    It learned *Mixtral's* weak spots, which motivates M9.
+    It learned *Mixtral's* weak spots. M9's flywheel exists to fix this, but needs real labels.
   - **`to_decision`:** gives about 42–62% of traffic low confidence, which raises the
     quality bar.
   - **Semantic cache:** opt-in because embeddings miss negation (safe vs unsafe: 0.99).
   - **Budgets:** can overshoot by the cost of requests in flight (the output estimate is
     512 tokens when `max_tokens` is unset). They are enforced only with
     `TIERWISE_REQUIRE_KEY=true`.
-  - **Registry:** quality values and prices are uncalibrated placeholders (calibration is
-    M9). Prices are marked "VERIFY".
+  - **Registry:** quality values and prices are uncalibrated placeholders, marked "VERIFY".
+    Calibrating them from flywheel labels (the spec's registry-drift item) is deferred.
   - **Datasets:** RouterBench and SPROUT have no stated license; only aggregates from SPROUT
     are published.
 - **Deferred minors** (recorded in each milestone's final message; none are blocking). The

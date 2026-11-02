@@ -311,6 +311,10 @@ uv run python -m training.retrain           # add --dry-run to gate without prom
 To switch to any version (to roll back, or forward), copy `versions/<id>/router.json` over the
 router dir's `router.json` and restart.
 
+**With the compose stack:** the gateway image contains a copy of `models/router` taken when the
+image was built. After a promotion (or a switch) on the host, rebuild it to pick up the change:
+`docker compose -f deploy/docker-compose.yml up -d --build gateway`.
+
 **Labels from the fake judge** only know a few keywords, so a challenger trained on them
 usually overfits and the gate rejects it. `scripts/flywheel_e2e.py` shows exactly that, then
 checks the version switch above. Real gains need a real judge model.
