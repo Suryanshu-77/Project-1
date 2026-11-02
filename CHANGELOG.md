@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- **Dashboard:** rebuilt. It now has headline stats with sparklines, spend against all-flagship, requests by model, routing decisions (why each request went where it did), latency percentiles, errors by status, failovers, stream hold and flywheel samples.
+- **Demo traffic:** `scripts/traffic.py` sends a realistic mix through the compose stack. Two opt-in fake-upstream knobs, `FAKE_DELAY_S` and `FAKE_FAIL_RATE`, add model latency and 503s.
+- **The flywheel experiment** is reproducible from `experiments/flywheel_local/`.
+- **Benchmark charts:** restyled. The deployed router's operating point is marked.
+- **CI:** actions moved to Node 24.
+
 ## 0.9.2: 2026-11-03
 
 Found by the first real-model flywheel run (local Ollama; results in `BENCHMARK.md`):

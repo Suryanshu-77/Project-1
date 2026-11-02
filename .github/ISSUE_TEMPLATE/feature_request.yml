@@ -1,0 +1,16 @@
+name: Feature request
+description: Suggest a change to routing, providers, the flywheel or anything else
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What you're trying to do, and where tierwise gets in the way.
+    validations:
+      required: true
+  - type: textarea
+    id: idea
+    attributes:
+      label: What would help
+      description: The change you have in mind, and anything you've tried instead.

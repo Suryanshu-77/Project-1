@@ -23,6 +23,9 @@ services:
   fake-upstream:
     build: ..
     command: ["uvicorn", "--app-dir", "scripts", "fake_upstream:app", "--host", "0.0.0.0", "--port", "8080"]
+    environment:  # dashboard demo only (scripts/traffic.py); both off by default
+      FAKE_DELAY_S: "${FAKE_DELAY_S:-0}"
+      FAKE_FAIL_RATE: "${FAKE_FAIL_RATE:-0}"
     ports:
       - "127.0.0.1:8080:8080"
 

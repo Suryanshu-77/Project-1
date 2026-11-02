@@ -25,6 +25,20 @@ uv run pytest -q
 Postgres store tests are skipped unless `TIERWISE_TEST_PG_URL` points at a running Postgres 16
 (for example `postgresql+asyncpg://tierwise:tierwise@localhost:5433/tierwise`).
 
+## Where things live
+
+| Path | What |
+|---|---|
+| `src/tierwise/api/` | the FastAPI app and the `/v1/chat/completions` flow |
+| `src/tierwise/router/` | rules scorer, learned router, `route()` |
+| `src/tierwise/selector.py` | the cheapest (model, effort) that clears the quality bar |
+| `src/tierwise/reliability/` | retries, circuit breakers, failover |
+| `src/tierwise/providers/` | Anthropic, OpenAI, Gemini and Ollama adapters |
+| `src/tierwise/flywheel.py`, `training/retrain.py`, `evaluation/gate.py` | the data flywheel |
+| `evaluation/`, `experiments/`, `BENCHMARK.md` | the routing benchmark and the flywheel experiment |
+| `deploy/` | the compose demo stack and its Grafana dashboard |
+| `docs/design.md` | the design document: read the relevant section before a larger change |
+
 ## Guidelines
 
 - **Tests first.** A bug fix comes with a test that fails without it.
@@ -32,6 +46,7 @@ Postgres store tests are skipped unless `TIERWISE_TEST_PG_URL` points at a runni
 - **Routing changes need evidence.** If a change can move routing decisions, re-run the
   evaluation (`uv run python -m evaluation.run_eval`) and report the before and after numbers
   in the pull request. The critical-set gate must still pass.
+- **Benchmark claims need reproducible steps,** in `BENCHMARK.md` or under `experiments/`.
 - **Changelog.** User-visible changes get a line in `CHANGELOG.md`.
 
 ## License

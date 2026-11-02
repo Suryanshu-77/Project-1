@@ -1,0 +1,24 @@
+# Registry for the local flywheel experiment: two Ollama models.
+# Prices are notional (Ollama is free) but proportioned like basic vs flagship, so the gate's
+# cost-saved comparison means something.
+baseline_model: large
+
+models:
+  - id: small
+    provider: ollama
+    upstream_id: qwen2.5:1.5b
+    price_in: 0.10
+    price_out: 0.40
+    context: 32768
+    caps: [json]
+    quality: 0.55
+    tier: basic
+  - id: large
+    provider: ollama
+    upstream_id: qwen2.5:7b
+    price_in: 1.00
+    price_out: 4.00
+    context: 32768
+    caps: [json]
+    quality: 0.95
+    tier: flagship

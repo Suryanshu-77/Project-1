@@ -9,9 +9,14 @@ A self-hosted, OpenAI-compatible LLM gateway that picks the cheapest model expec
 each request well, across Anthropic, OpenAI, Gemini and local Ollama models, and measures whether
 that choice paid off. Point any OpenAI SDK client at it by changing `base_url`.
 
-**Benchmark:** on 3,943 held-out prompts, tierwise's router keeps 95% of GPT-4's quality at 44%
-of its cost (random routing: 63%). Method, out-of-distribution results and limitations are in
-[BENCHMARK.md](BENCHMARK.md).
+- **Benchmark:** on 3,943 held-out prompts, tierwise's router keeps 95% of GPT-4's quality at
+  44% of its cost (random routing: 63%).
+- **Data flywheel:** in a $0 local run, about 400 labels from a free 7B judge raised the cost
+  saved at 99% quality by 10 points. The router retrains on your own traffic, behind a
+  champion/challenger gate.
+- **Method, out-of-distribution results and limitations:** [BENCHMARK.md](BENCHMARK.md).
+
+![The tierwise Grafana dashboard under 15 minutes of mixed demo traffic](docs/benchmark/dashboard.png)
 
 **Status:** 0.9.2 (beta). Learned routing, retries and failover, per-key budgets and rate
 limits, Prometheus/Grafana/OpenTelemetry, and a data flywheel that retrains the router on your
@@ -305,7 +310,8 @@ uv run python -m training.retrain           # add --dry-run to gate without prom
    **challenger** is trained.
 2. **Score.** The current router (the **champion**) and the challenger are scored on the same
    held-out rows:
-   - the cost saved at 95% of flagship quality
+   - the cost saved at a quality target set from those rows: half the gap between all-cheap
+     and all-flagship quality, never below 95%, so easy traffic can't make every router tie
    - critical misroutes: the 10 labeled hard prompts in `tests/router/labeled_prompts.jsonl`
      that the deployed router would send to a basic model, counted through the gateway's own
      `route()` and `select()`
@@ -355,13 +361,24 @@ docker compose -f deploy/docker-compose.yml exec gateway tierwise keys create --
 | Prometheus | http://localhost:9090 |
 | Jaeger traces | http://localhost:16686 |
 
-![tierwise Grafana dashboard after the smoke traffic](docs/benchmark/dashboard.jpg)
+**The dashboard** (pictured at the top) shows:
+- **Headline stats:** savings against an all-flagship baseline, spend, requests, p95 latency,
+  error rate and open circuits.
+- **Cost:** spend per hour against what the same traffic would cost on the flagship.
+- **Traffic and routing:** requests by model, and why each request went where it did (rules,
+  the learned router, an override, cache affinity, the semantic cache or a fallback).
+- **Reliability:** latency percentiles, errors by status, failovers and stream hold time.
+- **Flywheel:** samples collected for offline labeling.
 
-**The dashboard** shows:
-- savings against an all-flagship baseline
-- spend, and requests by model
-- p95 latency and stream hold time
-- cache hit rate, failovers, open circuits, and errors by status
+**Fill it with traffic:** `scripts/traffic.py` sends a realistic mix for a few minutes: easy
+and hard prompts, streams, routing modes, overrides, multi-turn chats, unknown models and a
+rate-limited key. Two knobs on the fake upstream add model latency and upstream failures, so
+retries and failover have something to do:
+
+```bash
+FAKE_DELAY_S=0.05 FAKE_FAIL_RATE=0.15 docker compose -f deploy/docker-compose.yml up -d --build
+uv run python scripts/traffic.py --minutes 15
+```
 
 **Behind it:**
 - **Prometheus** scrapes the gateway's `/metrics` endpoint. `/metrics` has no auth, by

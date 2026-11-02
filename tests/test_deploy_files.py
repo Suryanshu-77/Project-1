@@ -73,7 +73,7 @@ def test_dashboard_queries_use_real_metrics() -> None:
 def test_dashboard_has_savings_panel() -> None:
     dashboard = _dashboard()
     assert dashboard["uid"] == "tierwise"
-    [expr] = _exprs()["Saved vs all-flagship (%)"]
+    [expr] = _exprs()["Saved vs all-flagship"]
     assert "TODO" not in expr
     assert "tierwise_cost_usd_total" in expr and "tierwise_cost_saved_usd_total" in expr
 
@@ -158,3 +158,13 @@ def test_compose_enables_payloads() -> None:
     env = _compose()["services"]["gateway"]["environment"]
     assert env["TIERWISE_STORE_PAYLOADS"] == "true"  # keys still need --allow-shadow
     assert env["TIERWISE_SHADOW_RATE"] == "${TIERWISE_SHADOW_RATE:-0.02}"
+
+
+def test_fake_upstream_can_fail_for_the_dashboard_demo() -> None:
+    module = _fake_upstream()
+    assert module.FAIL_RATE == 0.0 and module.DELAY_S == 0.0  # off unless the demo asks
+    module.FAIL_RATE = 1.0
+    client = TestClient(module.app)
+    body = {"model": "small", "messages": [{"role": "user", "content": "hello there"}]}
+    assert client.post("/v1/chat/completions", json=body).status_code == 503
+    assert client.post("/v1/chat/completions", json={**body, "stream": True}).status_code == 503
