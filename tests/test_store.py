@@ -402,6 +402,25 @@ async def test_existing_db_gains_strong_judge_score_column(tmp_path: Path) -> No
     assert (old.judge_score_strong, labeled.judge_score_strong) == (None, 5)
 
 
+async def test_existing_db_gains_judge_model_column(tmp_path: Path) -> None:
+    log = RequestLog(_url(tmp_path))
+    await log.start()
+    log.submit_sample(_sample(0))
+    await log.stop()
+    with sqlite3.connect(tmp_path / "t.db") as conn:  # a 0.10 database: no judge recorded
+        conn.execute("ALTER TABLE shadow_samples DROP COLUMN judge_model")
+    upgraded = RequestLog(_url(tmp_path))
+    await upgraded.start()
+    assert upgraded.added_columns == ["judge_model"]
+    [old] = await upgraded.pending_samples(10)
+    await upgraded.save_label(replace(old, status="labeled", judge_score=2, judge_score_strong=5,
+                                      needs_strong=True, labeled_ts=2000.0,
+                                      judge_model="j"))  # fmt: skip
+    [labeled] = await upgraded.labeled_samples()
+    await upgraded.stop()
+    assert (old.judge_model, labeled.judge_model) == (None, "j")
+
+
 async def test_failed_sample_write_logs_no_payload_and_counts(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
 ) -> None:

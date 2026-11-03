@@ -9,6 +9,7 @@ import pytest
 
 pytest.importorskip("sklearn")
 
+from tierwise.calibration import CalibrationError  # noqa: E402
 from tierwise.registry import load_registry  # noqa: E402
 from tierwise.schema import ChatRequest  # noqa: E402
 from tierwise.store import RequestLog, ShadowSample  # noqa: E402
@@ -71,11 +72,15 @@ def _router(tmp_path: Path) -> Path:
     return router
 
 
-async def _run(tmp_path: Path, samples: list[ShadowSample], promote: bool = True):  # type: ignore[no-untyped-def]
+async def _run(tmp_path: Path, samples: list[ShadowSample], promote: bool = True,  # type: ignore[no-untyped-def]
+               cuts: dict[str, int] | None = None):  # fmt: skip
     url = await _db(tmp_path, samples)
+    cuts_path = tmp_path / "judge_cuts.json"  # never the developer's own ~/.cache file
+    if cuts is not None:
+        cuts_path.write_text(json.dumps({j: {"cut": c} for j, c in cuts.items()}), "utf-8")
     return await run(url, _router(tmp_path), REGISTRY, promote=promote,
                      data_dir=tmp_path / "no-base-data", embed=fake_embed,
-                     now=lambda: NOW)  # fmt: skip
+                     now=lambda: NOW, cuts_path=cuts_path)  # fmt: skip
 
 
 def _samples(n: int = 400) -> list[ShadowSample]:
@@ -124,6 +129,60 @@ async def test_too_few_new_labels_says_how_many_old_ones_were_skipped(tmp_path: 
     old = [replace(s, judge_score_strong=None) for s in _samples(40)]
     with pytest.raises(NotEnoughLabels, match="40 from before 0.10"):
         await _run(tmp_path, old)
+
+
+def _one(cheap: int, strong: int, judge: str | None, stored: bool = False) -> int:
+    """The training label shadow_rows gives one sample (of a pair, so it lands in some split)."""
+    samples = [replace(s, judge_score=cheap, judge_score_strong=strong, judge_model=judge,
+                       needs_strong=stored) for s in _samples(2)]  # fmt: skip
+    rows = [r for split in shadow_rows(samples, REGISTRY, set(), CUTS).values() for r in split]
+    assert {r.needs_strong for r in rows} == {rows[0].needs_strong}
+    return rows[0].needs_strong
+
+
+CUTS = {"j": 2}
+
+
+def test_shadow_rows_label_follows_the_judges_cut() -> None:
+    samples = [replace(s, judge_score=3, judge_score_strong=5, judge_model="j")
+               for s in _samples(2)]  # fmt: skip
+    default = [r.needs_strong for rows in shadow_rows(samples, REGISTRY, set()).values()
+               for r in rows]  # fmt: skip
+    assert default == [1, 1]  # 3 < 4: the shipped cut
+    assert _one(3, 5, "j") == 0  # 3 is not < 2: this judge's calibrated cut
+    assert _one(1, 5, "j") == 1
+
+
+def test_null_judge_uses_default_cut_even_when_calibrated() -> None:
+    """A label from before 0.11 may come from another judge: it keeps the shipped cut, even
+    once the current judge has its own."""
+    assert _one(3, 5, None) == 1
+
+
+def test_uncalibrated_judge_uses_default_cut() -> None:
+    assert _one(3, 5, "other") == 1
+
+
+def test_shadow_rows_ignores_stored_needs_strong() -> None:
+    assert _one(1, 5, "j", stored=False) == 1
+    assert _one(5, 5, "j", stored=True) == 0
+
+
+async def test_run_reports_cuts_used(tmp_path: Path) -> None:
+    samples = [replace(s, judge_model="j" if i % 2 else None) for i, s in enumerate(_samples())]
+    report = await _run(tmp_path, samples, promote=False, cuts={"j": 2, "unused": 3})
+    assert report.cuts_used == {"j": 2, "(unknown)": 4}
+    metrics = json.loads((tmp_path / "router" / "versions" / report.version / "metrics.json")
+                         .read_text(encoding="utf-8"))  # fmt: skip
+    assert metrics["cuts_used"] == {"j": 2, "(unknown)": 4}
+
+
+async def test_run_rejects_a_corrupt_cuts_file(tmp_path: Path) -> None:
+    url = await _db(tmp_path, _samples())
+    (tmp_path / "bad.json").write_text("{nope", encoding="utf-8")
+    with pytest.raises(CalibrationError, match="bad.json"):
+        await run(url, _router(tmp_path), REGISTRY, promote=False, embed=fake_embed,
+                  data_dir=tmp_path / "none", cuts_path=tmp_path / "bad.json")  # fmt: skip
 
 
 async def test_refuses_below_20_labels(tmp_path: Path) -> None:

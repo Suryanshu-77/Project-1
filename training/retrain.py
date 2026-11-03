@@ -20,7 +20,7 @@ import shutil
 import sys
 import time
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
@@ -31,7 +31,9 @@ from evaluation.datasets import load_gpt4_test
 from evaluation.gate import GateResult, decide, evaluate_classifier
 from evaluation.metrics import EvalRow
 from tierwise.affinity import AffinityTable
-from tierwise.config import Settings, registry_file, router_directory
+from tierwise.calibration import CalibrationError, load_cuts
+from tierwise.config import JUDGE_CUTS_FILE, Settings, registry_file, router_directory
+from tierwise.flywheel import DEFAULT_CUT, needs_strong
 from tierwise.registry import ModelSpec, Registry, load_registry
 from tierwise.router import RoutingDecision
 from tierwise.router.classifier import Classifier
@@ -61,6 +63,7 @@ class ShadowRow:
     request: ChatRequest  # the whole stored request: what the router embeds
     needs_strong: int
     row: EvalRow
+    judge_model: str | None = None  # whose cut made the label; None before 0.11
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,7 @@ class RetrainReport:
     promoted: bool
     n_labels: int
     n_old_labels_skipped: int = 0  # one-score labels from before 0.10, never trained on
+    cuts_used: dict[str, int] = field(default_factory=dict)  # judge -> cut; "(unknown)": None
 
 
 def prompt_of(request: ChatRequest) -> str:
@@ -85,11 +89,19 @@ def _cost(spec: ModelSpec, prompt: str, answer: str) -> float:
 
 
 def shadow_rows(
-    samples: list[ShadowSample], registry: Registry, critical: set[str]
+    samples: list[ShadowSample],
+    registry: Registry,
+    critical: set[str],
+    cuts: dict[str, int] | None = None,
 ) -> dict[Split, list[ShadowRow]]:
     """Labeled samples as training and eval rows, split by prompt hash. Critical prompts are
     left out, so the gate's critical-misroute check never scores a prompt it trained on.
-    Labels from before 0.10 are left out too (see `old_labels`)."""
+    Labels from before 0.10 are left out too (see `old_labels`).
+
+    Each label is made here from the two stored scores and the cut calibrated for the judge
+    that gave them (`cuts`, judge id -> cut), so recalibrating relabels history for free. A
+    sample with no judge recorded (before 0.11) or an uncalibrated judge gets DEFAULT_CUT."""
+    cuts = cuts or {}
     splits: dict[Split, list[ShadowRow]] = {"train": [], "val": [], "test": []}
     for sample in samples:
         routed = registry.get(sample.routed_model)
@@ -107,11 +119,14 @@ def shadow_rows(
         (cheap, cheap_answer), (strong, strong_answer) = (
             by_routed if cheap_is_routed else by_routed[::-1]
         )
-        label = int(sample.needs_strong)
+        assert sample.judge_score is not None  # labeled samples have both scores
+        cut = cuts.get(sample.judge_model, DEFAULT_CUT) if sample.judge_model else DEFAULT_CUT
+        label = int(needs_strong(sample.judge_score, sample.judge_score_strong, cut))
         cost_cheap = _cost(cheap, prompt, cheap_answer)
         row = EvalRow(prompt, 0.0 if label else 1.0, 1.0, cost_cheap,
                       _cost(strong, prompt, strong_answer))  # fmt: skip
-        splits[split_of(prompt)].append(ShadowRow(prompt, request, label, row))
+        splits[split_of(prompt)].append(ShadowRow(prompt, request, label, row,
+                                                  sample.judge_model))  # fmt: skip
     return splits
 
 
@@ -229,7 +244,9 @@ async def run(
     embed: Embed | None = None,
     now: Callable[[], float] = time.time,
     critical_path: Path = CRITICAL,
+    cuts_path: Path = JUDGE_CUTS_FILE,
 ) -> RetrainReport:
+    cuts = load_cuts(cuts_path)  # before the database: a corrupt file fails fast
     log = RequestLog(db_url)
     await log.start()
     try:
@@ -237,7 +254,9 @@ async def run(
     finally:
         await log.stop()
     critical_prompts = _critical(critical_path)
-    splits = shadow_rows(samples, registry, {normalize(p) for p in critical_prompts})
+    splits = shadow_rows(samples, registry, {normalize(p) for p in critical_prompts}, cuts)
+    cuts_used = {(r.judge_model or "(unknown)"): cuts.get(r.judge_model or "", DEFAULT_CUT)
+                 for rows in splits.values() for r in rows}  # fmt: skip
     n_labels = sum(len(rows) for rows in splits.values())
     n_old = old_labels(samples)
     if n_labels < MIN_LABELS:
@@ -309,6 +328,7 @@ async def run(
         metrics = {
             "version": version, "kind": fitted.kind, "threshold": fitted.threshold,
             "val_auc": fitted.val_auc, "n_labels": n_labels, "n_old_labels_skipped": n_old,
+            "cuts_used": cuts_used,
             "n_train": len(train_y),
             "n_eval": len(eval_rows), "decision": decision, "reason": reason,
             "champion": asdict(champion_result), "challenger": asdict(challenger_result),
@@ -327,7 +347,7 @@ async def run(
     if promoted:
         _promote(router_dir, new, config)
     return RetrainReport(decision, reason, champion_result, challenger_result, version,
-                         promoted, n_labels, n_old)  # fmt: skip
+                         promoted, n_labels, n_old, cuts_used)  # fmt: skip
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -345,6 +365,9 @@ def main(argv: list[str] | None = None) -> int:
     except NotEnoughLabels as exc:
         print(f"retrain skipped: {exc}", file=sys.stderr)
         return 2
+    except CalibrationError as exc:
+        print(f"retrain failed: {exc}", file=sys.stderr)
+        return 1
     print(json.dumps(asdict(report), indent=2))
     if report.n_old_labels_skipped:
         print(f"skipped {report.n_old_labels_skipped} labels from before 0.10 (one-score judge); "

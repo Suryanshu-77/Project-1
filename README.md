@@ -290,8 +290,9 @@ For each sample:
    cheaper model answered, otherwise the cheapest basic model.
 2. A judge model (`TIERWISE_JUDGE_MODEL`, default the baseline model) sees both answers, in a
    random order, and scores each from 1 to 5 on its own merits. The prompt **needs a strong
-   model** when the cheaper answer scores below 4 and the stronger one 4 or more. A prompt both
-   models fail gains nothing from the flagship, so it isn't labeled "needs strong".
+   model** when the cheaper answer scores below the judge's **cut** and the stronger one 4 or
+   more. A prompt both models fail gains nothing from the flagship, so it isn't labeled
+   "needs strong". The cut is 4 until the judge is calibrated (below).
 
 Each label is two paid calls. The run stops at `TIERWISE_SHADOW_BUDGET_USD` (default $5) per
 calendar month, counting earlier runs. The run can go over the budget by at most one sample.
@@ -302,6 +303,36 @@ every other answer 5.
 **Privacy:** samples store prompts and answers in your database, which is why collection
 needs three opt-ins. There is no purge command yet; delete rows from `shadow_samples`
 directly if you need to.
+
+**Calibrate the judge (once per judge model, paid).** Judges grade with different
+harshness: at the default cut, Claude Haiku labeled 3.3× as many prompts as the reference judge
+and the retrained router got worse; at its calibrated cut the same judgments helped
+(`BENCHMARK.md`). Run:
+
+```bash
+pip install 'tierwise[calibrate]'          # pyarrow, to read SPROUT's parquet files
+tierwise flywheel calibrate --dry-run      # fetch and check the reference, print the cost
+tierwise flywheel calibrate                # about 400 judge calls; --max-usd caps it (0.10)
+```
+
+1. **Reference.** tierwise ships 400 SPROUT prompt pairs (gpt-4o-mini against gpt-4o) as hashes
+   only: SPROUT has no stated license, so its text is never redistributed. Calibration
+   downloads the 3 parquet files (about 407 MB, once) at a pinned commit, checks each file's
+   sha256 and each pair's key and prompt hash, and caches them in `~/.cache/tierwise/sprout/`.
+2. **Judge.** Your judge scores each pair exactly as `flywheel label` would.
+3. **Choose.** Each cut from 2 to 4 is compared against SPROUT's own verdicts. A cut qualifies
+   when it labels between half and twice SPROUT's rate; the best F1 among those wins, ties
+   going to the smaller cut. If none qualifies, nothing is saved and the command says why.
+4. **Save.** The cut goes to `~/.cache/tierwise/judge_cuts.json`, keyed by judge model. An
+   incomplete run (the spend cap hit, or more than 5% of pairs unscored) saves nothing.
+
+Set `TIERWISE_JUDGE_MODEL` to the judge you label with first: the default is the baseline
+flagship. A run whose estimate is above `--max-usd` is refused before any call (Claude
+Haiku: about $0.06; a flagship judge: about $2).
+
+Each label records its judge (`shadow_samples.judge_model`), and retraining applies that
+judge's cut to the two stored scores. Recalibrating relabels all of history without a single
+new call. Labels with no judge recorded (from before 0.11) keep the cut of 4.
 
 **3. Retrain and gate (offline).** Needs the encoder (`tierwise fetch-model`):
 
@@ -331,7 +362,8 @@ uv run python -m training.retrain           # add --dry-run to gate without prom
 4. **Version.** Every challenger is kept, write-once, in `models/router/versions/<UTC
    timestamp>/`. Its `router.json` names its own weights. Promoting is a single atomic
    replace of the router dir's `router.json`, so weights and threshold always switch
-   together. A champion that isn't in `versions/` yet is archived first, as
+   together. Its `metrics.json` records the cut used for each judge (`cuts_used`). A
+   champion that isn't in `versions/` yet is archived first, as
    `versions/initial-<hash>/`. Restart the gateway to load the new router; `/healthz` shows
    `router_version`.
 

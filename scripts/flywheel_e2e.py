@@ -152,7 +152,8 @@ async def main() -> None:
     for attempt in (1, 2):  # the second run has no new labels: it must still decide cleanly
         before = (router / "router.json").read_bytes()
         report = await retrain.run(settings.db_url, router, REGISTRY, promote=True,
-                                   data_dir=work / "no-base-data")  # fmt: skip
+                                   data_dir=work / "no-base-data",
+                                   cuts_path=work / "judge_cuts.json")  # fmt: skip
         print(f"retrain #{attempt}:", json.dumps(asdict(report), indent=2))
         changed = (router / "router.json").read_bytes() != before
         if not report.reason:

@@ -121,6 +121,7 @@ async def test_cheap_routed_gets_flagship_contrast_and_label(log: RequestLog, i:
     order = flywheel.judge_messages("q", "c", "s", seed=f"s{i}")[1]
     assert order == ("a" if i == 0 else "b")  # both mappings are exercised
     assert labeled.needs_strong is True
+    assert labeled.judge_model == _judge().id
     # contrast on large (2000 tokens at $20/M) plus the judge on large: $0.04 + $0.04
     assert labeled.label_cost_usd == pytest.approx(0.08) and run.spent_usd == pytest.approx(0.08)
     assert labeled.labeled_ts == NOV
@@ -158,6 +159,20 @@ def test_needs_strong_when_only_the_cheap_answer_falls_short() -> None:
     assert not needs_strong(4, 5)  # a cheap answer a user would accept
     assert not needs_strong(1, 3)  # the strong answer falls short too
     assert not needs_strong(5, 3) and not needs_strong(4, 2)  # the cheaper answer was better
+
+
+@pytest.mark.parametrize(("cheap", "strong", "cut", "want"), [
+    (1, 4, 2, True), (2, 4, 2, False), (2, 4, 3, True), (3, 5, 4, True),
+    (1, 3, 2, False),  # the strong bar stays at GOOD_ENOUGH whatever the cut
+])  # fmt: skip
+def test_needs_strong_at_each_cut(cheap: int, strong: int, cut: int, want: bool) -> None:
+    assert needs_strong(cheap, strong, cut) is want
+
+
+def test_needs_strong_default_is_the_0_10_rule() -> None:
+    for c in range(1, 6):
+        for s in range(1, 6):
+            assert needs_strong(c, s) is (c < 4 <= s)
 
 
 def test_needs_strong_is_monotonic() -> None:
