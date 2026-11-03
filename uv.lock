@@ -2909,10 +2909,16 @@ dependencies = [
     { name = "uvicorn", extra = ["standard"] },
 ]
 
+[package.optional-dependencies]
+calibrate = [
+    { name = "pyarrow" },
+]
+
 [package.dev-dependencies]
 dev = [
     { name = "mypy" },
     { name = "openai" },
+    { name = "pyarrow" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
     { name = "respx" },
@@ -2945,6 +2951,7 @@ requires-dist = [
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=1.28" },
     { name = "opentelemetry-sdk", specifier = ">=1.28" },
     { name = "prometheus-client", specifier = ">=0.21" },
+    { name = "pyarrow", marker = "extra == 'calibrate'", specifier = ">=15" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pydantic-settings", specifier = ">=2.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
@@ -2952,11 +2959,13 @@ requires-dist = [
     { name = "tokenizers", specifier = ">=0.20" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
+provides-extras = ["calibrate"]
 
 [package.metadata.requires-dev]
 dev = [
     { name = "mypy", specifier = ">=1.11" },
     { name = "openai", specifier = ">=1.40" },
+    { name = "pyarrow", specifier = ">=15" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.24" },
     { name = "respx", specifier = ">=0.21" },

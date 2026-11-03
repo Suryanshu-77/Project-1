@@ -46,11 +46,23 @@ def fetch_model(
     max_bytes: int = MODEL_SIZE,
 ) -> Path:
     """Write `out_dir/model.onnx` atomically; a bad hash or a broken download leaves nothing."""
-    target = out_dir / "model.onnx"
+    return download_file(url, out_dir / "model.onnx", sha256, max_bytes, opener)
+
+
+def download_file(
+    url: str,
+    target: Path,
+    sha256: str,
+    max_bytes: int,
+    opener: Callable[[str], BinaryIO] = _open,
+) -> Path:
+    """Download a pinned file to `target` atomically, unless it is already there with this
+    sha256; a bad hash, an oversized or a broken download leaves nothing."""
     if target.exists() and _sha256(target) == sha256:
         return target
-    out_dir.mkdir(parents=True, exist_ok=True)
-    tmp = tempfile.NamedTemporaryFile(dir=out_dir, prefix=".model-", suffix=".part", delete=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile(dir=target.parent, prefix=f".{target.stem}-", suffix=".part",
+                                      delete=False)  # fmt: skip
     try:
         digest, written, reported = hashlib.sha256(), 0, 0
         with tmp, opener(url) as source:
