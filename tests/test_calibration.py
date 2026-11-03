@@ -382,3 +382,40 @@ def test_flywheel_calibrate_reference_failure_exits_1(
 
     monkeypatch.setattr(calibration, "fetch_reference", broken)
     assert main(["flywheel", "calibrate", "--cuts-file", str(tmp_path / "c.json")]) == 1
+
+
+def test_flywheel_calibrate_corrupt_cuts_file_fails_before_any_call(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A hand-edited cuts file must stop the run before ~400 judge calls are paid for."""
+    calls = _cli(monkeypatch, tmp_path, _ref_pairs(4), _judged({"p0": (1, 5)}))
+    out = tmp_path / "cuts.json"
+    out.write_text("{oops", encoding="utf-8")
+    assert main(["flywheel", "calibrate", "--cuts-file", str(out)]) == 1
+    assert calls == [] and "cuts.json" in capsys.readouterr().err
+
+
+def test_flywheel_calibrate_save_failure_still_reports_the_cut(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pairs = _ref_pairs(4)
+    scores = {"p0": (1, 5), "p1": (5, 5), "p2": (4, 5), "p3": (3, 3)}
+    _cli(monkeypatch, tmp_path, pairs, _judged(scores))
+
+    def read_only(*_: Any) -> None:
+        raise OSError("read-only file system")
+
+    monkeypatch.setattr(calibration, "save_cut", read_only)
+    assert main(["flywheel", "calibrate", "--cuts-file", str(tmp_path / "c.json")]) == 1
+    err = capsys.readouterr().err
+    assert "cut 2" in err and "read-only file system" in err
+
+
+def test_flywheel_calibrate_refuses_when_the_estimate_passes_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A run sure to stop at --max-usd would spend the whole cap and save nothing."""
+    calls = _cli(monkeypatch, tmp_path, _ref_pairs(400), _judged({}))
+    out = tmp_path / "cuts.json"
+    assert main(["flywheel", "calibrate", "--cuts-file", str(out), "--max-usd", "0.001"]) == 1
+    assert calls == [] and not out.exists() and "--max-usd" in capsys.readouterr().err

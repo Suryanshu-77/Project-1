@@ -326,6 +326,10 @@ tierwise flywheel calibrate                # about 400 judge calls; --max-usd ca
 4. **Save.** The cut goes to `~/.cache/tierwise/judge_cuts.json`, keyed by judge model. An
    incomplete run (the spend cap hit, or more than 5% of pairs unscored) saves nothing.
 
+Set `TIERWISE_JUDGE_MODEL` to the judge you label with first: the default is the baseline
+flagship. A run whose estimate is above `--max-usd` is refused before any call (Claude
+Haiku: about $0.06; a flagship judge: about $2).
+
 Each label records its judge (`shadow_samples.judge_model`), and retraining applies that
 judge's cut to the two stored scores. Recalibrating relabels all of history without a single
 new call. Labels with no judge recorded (from before 0.11) keep the cut of 4.

@@ -147,14 +147,20 @@ async def _flywheel_calibrate(args: argparse.Namespace, settings: Settings) -> i
         print(f"judge model {settings.judge_model!r} is not in the registry", file=sys.stderr)
         return 1
     try:
+        calibration.load_cuts(args.cuts_file)  # a corrupt file fails now, before any paid call
         pairs = calibration.fetch_reference(calibration.reference_file())
     except calibration.CalibrationError as exc:
         print(f"flywheel calibrate failed: {exc}", file=sys.stderr)
         return 1
+    cost = calibration.estimate_usd(pairs, judge)
     if args.dry_run:
-        cost = calibration.estimate_usd(pairs, judge)
         print(f"dry run: {len(pairs)} calls to judge {judge.id}, ~${cost:.2f}; no calls made")
         return 0
+    if cost > args.max_usd:  # sure to stop at the cap: it would spend it all and save nothing
+        print(f"judge {judge.id}: ~${cost:.2f} for {len(pairs)} calls is above --max-usd "
+              f"${args.max_usd:.2f}; raise it or choose a cheaper TIERWISE_JUDGE_MODEL. "
+              "Nothing spent", file=sys.stderr)  # fmt: skip
+        return 1
     clients: list[httpx.AsyncClient] = []
 
     def client_for(_: str) -> httpx.AsyncClient:
@@ -194,14 +200,19 @@ async def _flywheel_calibrate(args: argparse.Namespace, settings: Settings) -> i
                   f"precision {s.precision:.2f}, recall {s.recall:.2f}",
                   file=sys.stderr)  # fmt: skip
         return 1
-    calibration.save_cut(args.cuts_file, judge.id, {
-        "cut": best.cut, "rate": best.rate, "reference_rate": reference_rate,
-        "precision": best.precision, "recall": best.recall, "f1": best.f1, "n": len(scored),
-        "spent_usd": judged.spent_usd, "ts": time.time(),
-    })  # fmt: skip
-    print(f"judge {judge.id}: cut {best.cut} (rate {best.rate:.1%}, G {reference_rate:.1%}, "
-          f"precision {best.precision:.2f}, recall {best.recall:.2f}, n {len(scored)}, "
-          f"${judged.spent_usd:.2f}); saved to {args.cuts_file}")  # fmt: skip
+    summary = (f"judge {judge.id}: cut {best.cut} (rate {best.rate:.1%}, G {reference_rate:.1%}, "
+               f"precision {best.precision:.2f}, recall {best.recall:.2f}, n {len(scored)}, "
+               f"${judged.spent_usd:.2f})")  # fmt: skip
+    try:
+        calibration.save_cut(args.cuts_file, judge.id, {
+            "cut": best.cut, "rate": best.rate, "reference_rate": reference_rate,
+            "precision": best.precision, "recall": best.recall, "f1": best.f1, "n": len(scored),
+            "spent_usd": judged.spent_usd, "ts": time.time(),
+        })  # fmt: skip
+    except (calibration.CalibrationError, OSError) as exc:  # the calls are paid: show the result
+        print(f"{summary}; NOT saved to {args.cuts_file}: {exc}", file=sys.stderr)
+        return 1
+    print(f"{summary}; saved to {args.cuts_file}")
     return 0
 
 
