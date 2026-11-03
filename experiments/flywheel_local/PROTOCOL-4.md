@@ -52,6 +52,19 @@ This protocol runs that path once with the real judge.
     recall 65%
   - the amount spent
 
+## Result (2026-11-03): SUCCESS
+
+`calibrate_haiku.py` exited 0 and saved **cut 2** for `claude-haiku-5-5`
+([judge_cuts_haiku.json](judge_cuts_haiku.json)):
+
+| | Rate (G 6.5%) | Precision | Recall | F1 | Unscored | Spent (list) |
+|---|---|---|---|---|---|---|
+| This run | 4.25% | 94% | 61.5% | 0.74 | 0 / 400 | $0.1588 |
+| Protocol 3, stored judgments | 4.5% | 94% | 65% | 0.77 | n/a | n/a |
+
+The dry run estimated $0.17 (0.11.1's corrected estimator), and the real spend came within 5% of
+it.
+
 ## What this can't show
 
 - **These are the same pairs Protocol 3 chose c = 2 from.** A SUCCESS shows that the product
