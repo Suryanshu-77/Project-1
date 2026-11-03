@@ -135,6 +135,7 @@ shadow_samples_table = Table(
     Column("label_cost_usd", Float, nullable=False),
     Column("labeled_ts", Float),
     Column("error", String),
+    Column("judge_model", String),  # who scored it: its cut is calibrated per judge
 )
 usage_monthly_table = Table(
     "usage_monthly",
@@ -181,6 +182,7 @@ class ShadowSample:
     label_cost_usd: float = 0.0
     labeled_ts: float | None = None
     error: str | None = None
+    judge_model: str | None = None  # the judge that scored it; None before 0.11
 
 
 def _month_bounds(month: str) -> tuple[float, float]:

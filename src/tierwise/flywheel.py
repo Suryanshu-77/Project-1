@@ -29,6 +29,7 @@ from tierwise.tokens import estimate_output, estimate_tokens, text_of
 
 JUDGE_MARKER = "tierwise-judge-v2"
 GOOD_ENOUGH = 4  # an answer scored this or higher is one a user would accept
+DEFAULT_CUT = 4  # the cheaper answer falls short below this, for an uncalibrated judge
 RUBRIC = f"""You grade answers for {JUDGE_MARKER}.
 You see a conversation and two answers to its last turn, A and B. Score EACH answer on its own,
 from 1 to 5, for how well it answers the last turn:
@@ -116,14 +117,15 @@ def _score(raw: Any) -> int:
     return int(score)
 
 
-def needs_strong(cheap: int, strong: int) -> bool:
+def needs_strong(cheap: int, strong: int, cut: int = DEFAULT_CUT) -> bool:
     """Whether a prompt needs the strong model, from the judge's 1-5 scores of the cheaper and
-    the stronger answer (GOOD_ENOUGH = 4 is the score a user would accept).
+    the stronger answer: the cheaper one falls short (below `cut`) and the stronger one is
+    acceptable (GOOD_ENOUGH, fixed).
 
-    This is the label the router learns from. It should be True only where routing to the
-    strong model would actually have bought a better answer.
+    This is the label the router learns from. `cut` depends on how harshly the judge grades, so
+    it is calibrated per judge (`tierwise.calibration`); DEFAULT_CUT is 0.10's rule.
     """
-    return cheap < GOOD_ENOUGH <= strong
+    return cheap < cut and strong >= GOOD_ENOUGH
 
 
 async def _ask(
@@ -182,6 +184,7 @@ async def _label(
         judge_score=cheap_score,
         judge_score_strong=strong_score,
         needs_strong=needs_strong(cheap_score, strong_score),
+        judge_model=judge.id,
         label_cost_usd=spent,
         labeled_ts=now,
     )
