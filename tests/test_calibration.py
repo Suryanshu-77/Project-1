@@ -1,22 +1,33 @@
 import hashlib
 import json
+import os
+import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from tierwise import calibration
+from tierwise.__main__ import main
 from tierwise.calibration import (
     CANDIDATE_CUTS,
     CalibrationError,
     CutStats,
+    Judged,
+    RefPair,
     choose_cut,
     cut_stats,
     fetch_reference,
+    judge_reference,
+    load_cuts,
     read_rows,
     reference_file,
     row_pid,
+    save_cut,
 )  # fmt: skip
+from tierwise.providers.openai import OpenAIProvider
+from tierwise.registry import ModelSpec
 from training.prepare_data import normalize
 
 CHEAP, STRONG = "cheap-model", "strong-model"
@@ -133,6 +144,7 @@ def test_packaged_reference_is_400_text_free_pairs_at_a_pinned_revision() -> Non
 
 
 DATA = Path(__file__).parent / "data"
+REPO = Path(__file__).parents[1]
 
 
 def _stats(cut: int, rate: float, f1: float) -> CutStats:
@@ -184,3 +196,189 @@ def test_haiku_pilot_reproduces_protocol_3() -> None:
     assert best is not None and best.cut == 2
     assert round(best.rate, 3) == 0.045 and round(best.precision, 2) == 0.94
     assert round(best.recall, 2) == 0.65
+
+
+JUDGE = ModelSpec.model_validate(
+    {"id": "judge-x", "provider": "openai", "price_in": 10.0, "price_out": 10.0,
+     "context": 100_000, "caps": ["json"], "quality": 0.5, "tier": "basic"}  # fmt: skip
+)
+
+
+def _ref_pairs(n: int, positives: int = 1) -> list[RefPair]:
+    return [RefPair(pid=f"p{i}", prompt=f"q{i}", cheap=f"cheap {i}", strong=f"strong {i}",
+                    gold=i < positives) for i in range(n)]  # fmt: skip
+
+
+def _judge_provider(scores: dict[str, int], replies: dict[str, str] | None = None,
+                    calls: list[Any] | None = None) -> OpenAIProvider:  # fmt: skip
+    """A judge scoring each answer by its text ("cheap 3" -> scores["cheap 3"], default 5)."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        if calls is not None:
+            calls.append(body)
+        text = body["messages"][-1]["content"]
+        found = re.search(r"Answer A:\n(.*?)\n\nAnswer B:\n(.*?)\n\n", text, re.DOTALL)
+        assert found is not None
+        a, b = found.groups()
+        default = json.dumps({"a": scores.get(a, 5), "b": scores.get(b, 5)})
+        content = (replies or {}).get(a, default)
+        return httpx.Response(200, json={
+            "id": "x", "model": body["model"], "created": 1,
+            "choices": [{"index": 0, "finish_reason": "stop",
+                         "message": {"role": "assistant", "content": content}}],
+            "usage": {"prompt_tokens": 1000, "completion_tokens": 1000},
+        })  # fmt: skip
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    return OpenAIProvider(client, "sk-test")
+
+
+async def test_judge_reference_scores_each_pair() -> None:
+    calls: list[Any] = []
+    provider = _judge_provider({"cheap 0": 1, "cheap 1": 4}, calls=calls)
+    judged = await judge_reference(_ref_pairs(2), provider, JUDGE, max_usd=1.0)
+    assert judged.scores == {"p0": (1, 5), "p1": (4, 5)}  # (cheap, strong), whatever the order
+    assert (judged.unscored, judged.stopped_by_cap) == (0, False)
+    assert judged.spent_usd == pytest.approx(0.04)  # 2 calls x 2000 tokens at $10/M
+    assert calls[0]["model"] == "judge-x" and calls[0]["temperature"] == 0
+    assert "user: q0" in calls[0]["messages"][-1]["content"]  # the label path's transcript
+
+
+async def test_calibrate_counts_unparseable_as_unscored() -> None:
+    replies = {"cheap 1": "B is better", "strong 1": '{"a": 4}'}  # prose, or one score only
+    judged = await judge_reference(_ref_pairs(3), _judge_provider({}, replies), JUDGE, max_usd=1.0)
+    assert set(judged.scores) == {"p0", "p2"} and judged.unscored == 1
+    assert judged.spent_usd == pytest.approx(0.06)  # the unscored call was still paid for
+
+
+async def test_judge_reference_stops_at_cap() -> None:
+    judged = await judge_reference(_ref_pairs(5), _judge_provider({}), JUDGE, max_usd=0.05)
+    assert len(judged.scores) == 2 and judged.stopped_by_cap  # 0.02 + 0.02; a third: 0.06 > 0.05
+    assert judged.spent_usd == pytest.approx(0.04)
+
+
+def test_load_cuts_missing_file_is_empty(tmp_path: Path) -> None:
+    assert load_cuts(tmp_path / "none.json") == {}
+
+
+@pytest.mark.parametrize("text", ["{not json", '{"j": {"cut": 7}}', '{"j": {"rate": 0.1}}',
+                                  '["j"]', '{"j": {"cut": "2"}}'])  # fmt: skip
+def test_load_cuts_rejects_bad_file(tmp_path: Path, text: str) -> None:
+    path = tmp_path / "judge_cuts.json"
+    path.write_text(text, encoding="utf-8")
+    with pytest.raises(CalibrationError, match="judge_cuts.json"):
+        load_cuts(path)
+
+
+def test_save_cut_keeps_other_judges(tmp_path: Path) -> None:
+    path = tmp_path / "judge_cuts.json"
+    save_cut(path, "a", {"cut": 3})
+    before = json.loads(path.read_text(encoding="utf-8"))["a"]
+    save_cut(path, "b", {"cut": 2})
+    save_cut(path, "b", {"cut": 4})
+    data = json.loads(path.read_text(encoding="utf-8"))
+    assert data["a"] == before and data["b"] == {"cut": 4}
+    assert load_cuts(path) == {"a": 3, "b": 4}
+
+
+def test_save_cut_is_atomic(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    path = tmp_path / "judge_cuts.json"
+    save_cut(path, "a", {"cut": 3})
+
+    def fail(*_: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(calibration.os, "replace", fail)
+    with pytest.raises(OSError):
+        save_cut(path, "a", {"cut": 2})
+    assert load_cuts(path) == {"a": 3} and list(tmp_path.iterdir()) == [path]
+
+
+def _cli(monkeypatch: pytest.MonkeyPatch, tmp_path: Path, pairs: list[RefPair],
+         judged: Judged | None = None) -> list[Any]:  # fmt: skip
+    """`tierwise flywheel calibrate` with the reference and the judge faked."""
+    judge_calls: list[Any] = []
+
+    async def judge(pairs: list[RefPair], provider: Any, spec: ModelSpec, max_usd: float) -> Judged:
+        judge_calls.append((spec.id, max_usd))
+        assert judged is not None
+        return judged
+
+    monkeypatch.setattr(calibration, "reference_file", lambda: {})
+    monkeypatch.setattr(calibration, "fetch_reference", lambda ref: pairs)
+    monkeypatch.setattr(calibration, "judge_reference", judge)
+    monkeypatch.chdir(tmp_path)  # no developer .env: it could name another judge model
+    for name in [n for n in os.environ if n.startswith("TIERWISE_") or n == "JUDGE_MODEL"]:
+        monkeypatch.delenv(name)
+    monkeypatch.setenv("TIERWISE_REGISTRY", str(REPO / "config/registry.yaml"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-test")  # the default judge: the baseline model
+    return judge_calls
+
+
+def _judged(scores: dict[str, tuple[int, int]], unscored: int = 0) -> Judged:
+    return Judged(scores=scores, unscored=unscored, spent_usd=0.12, stopped_by_cap=False)
+
+
+def test_flywheel_calibrate_writes_cut(tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+                                       capsys: pytest.CaptureFixture[str]) -> None:  # fmt: skip
+    pairs = _ref_pairs(4)  # p0 is SPROUT's one positive
+    scores = {"p0": (1, 5), "p1": (5, 5), "p2": (4, 5), "p3": (3, 3)}
+    calls = _cli(monkeypatch, tmp_path, pairs, _judged(scores))
+    out = tmp_path / "cuts.json"
+    assert main(["flywheel", "calibrate", "--cuts-file", str(out), "--max-usd", "0.3"]) == 0
+    entry = json.loads(out.read_text(encoding="utf-8"))[calls[0][0]]
+    assert calls[0][1] == 0.3 and entry["cut"] == 2 and entry["n"] == 4
+    assert (entry["rate"], entry["reference_rate"], entry["spent_usd"]) == (0.25, 0.25, 0.12)
+    assert {"precision", "recall", "f1", "ts"} <= set(entry)
+    assert re.search(r"cut 2 \(rate 25\.0%, G 25\.0%", capsys.readouterr().out)
+
+
+def test_flywheel_calibrate_dry_run_makes_no_calls(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    calls = _cli(monkeypatch, tmp_path, _ref_pairs(400))
+    out = tmp_path / "cuts.json"
+    assert main(["flywheel", "calibrate", "--dry-run", "--cuts-file", str(out)]) == 0
+    assert calls == [] and not out.exists() and "400 calls" in capsys.readouterr().out
+
+
+def test_flywheel_calibrate_too_many_unscored_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pairs = _ref_pairs(20)
+    _cli(monkeypatch, tmp_path, pairs, _judged({p.pid: (5, 5) for p in pairs[2:]}, unscored=2))
+    out = tmp_path / "cuts.json"
+    assert main(["flywheel", "calibrate", "--cuts-file", str(out)]) == 1 and not out.exists()
+
+
+def test_flywheel_calibrate_stopped_by_cap_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    judged = Judged(scores={"p0": (1, 5)}, unscored=0, spent_usd=0.1, stopped_by_cap=True)
+    _cli(monkeypatch, tmp_path, _ref_pairs(4), judged)
+    out = tmp_path / "cuts.json"
+    assert main(["flywheel", "calibrate", "--cuts-file", str(out)]) == 1 and not out.exists()
+
+
+def test_flywheel_calibrate_no_eligible_cut_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    pairs = _ref_pairs(4)
+    _cli(monkeypatch, tmp_path, pairs, _judged({p.pid: (1, 5) for p in pairs}))  # labels them all
+    out = tmp_path / "cuts.json"
+    assert main(["flywheel", "calibrate", "--cuts-file", str(out)]) == 1 and not out.exists()
+    err = capsys.readouterr().err
+    assert "cut 2" in err and "100.0%" in err and "G 25.0%" in err
+
+
+def test_flywheel_calibrate_reference_failure_exits_1(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _cli(monkeypatch, tmp_path, [])
+
+    def broken(ref: Any) -> list[RefPair]:
+        raise CalibrationError("missing 3 of 400 reference pairs")
+
+    monkeypatch.setattr(calibration, "fetch_reference", broken)
+    assert main(["flywheel", "calibrate", "--cuts-file", str(tmp_path / "c.json")]) == 1

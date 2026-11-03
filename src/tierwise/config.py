@@ -90,6 +90,7 @@ def _home() -> Path:
 
 
 CACHE_ROUTER_DIR = _home() / ".cache" / "tierwise" / "router"  # where fetch-model writes
+JUDGE_CUTS_FILE = _home() / ".cache" / "tierwise" / "judge_cuts.json"  # flywheel calibrate
 
 
 def packaged_data() -> Traversable:

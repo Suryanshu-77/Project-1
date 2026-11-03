@@ -10,10 +10,10 @@ from pathlib import Path
 import httpx
 import uvicorn
 
-from tierwise import __version__, fetch, flywheel
+from tierwise import __version__, calibration, fetch, flywheel
 from tierwise.api.app import LIMITS, TIMEOUT, build_providers, create_app
 from tierwise.budgets import month_of
-from tierwise.config import CACHE_ROUTER_DIR, Settings, registry_file
+from tierwise.config import CACHE_ROUTER_DIR, JUDGE_CUTS_FILE, Settings, registry_file
 from tierwise.keys import generate_key, hash_key
 from tierwise.registry import load_registry
 from tierwise.store import RequestLog
@@ -63,6 +63,16 @@ def _parser() -> argparse.ArgumentParser:
         "label", help="contrast + judge pending samples (paid calls, monthly budget)"
     )
     label.add_argument("--limit", type=_rpm, default=500, help="most samples to label this run")
+    calibrate = fw_actions.add_parser(
+        "calibrate", help="choose the judge's needs-strong cut from SPROUT reference pairs"
+    )
+    calibrate.add_argument(
+        "--dry-run", action="store_true", help="fetch and check the reference, print the cost"
+    )
+    calibrate.add_argument(
+        "--max-usd", type=_budget, default=0.10, help="stop (and save nothing) past this spend"
+    )
+    calibrate.add_argument("--cuts-file", type=Path, default=JUDGE_CUTS_FILE)
     return parser
 
 
@@ -130,6 +140,71 @@ async def _flywheel_label(args: argparse.Namespace, settings: Settings) -> int:
     return 0
 
 
+async def _flywheel_calibrate(args: argparse.Namespace, settings: Settings) -> int:
+    registry = load_registry(registry_file(settings))
+    judge = registry.get(settings.judge_model or registry.baseline_model)
+    if judge is None:
+        print(f"judge model {settings.judge_model!r} is not in the registry", file=sys.stderr)
+        return 1
+    try:
+        pairs = calibration.fetch_reference(calibration.reference_file())
+    except calibration.CalibrationError as exc:
+        print(f"flywheel calibrate failed: {exc}", file=sys.stderr)
+        return 1
+    if args.dry_run:
+        cost = calibration.estimate_usd(pairs, judge)
+        print(f"dry run: {len(pairs)} calls to judge {judge.id}, ~${cost:.2f}; no calls made")
+        return 0
+    clients: list[httpx.AsyncClient] = []
+
+    def client_for(_: str) -> httpx.AsyncClient:
+        clients.append(httpx.AsyncClient(limits=LIMITS, timeout=TIMEOUT))
+        return clients[-1]
+
+    try:
+        provider = build_providers(settings, client_for).get(judge.provider)
+        if provider is None:
+            print(f"judge {judge.id}: provider {judge.provider!r} is not configured",
+                  file=sys.stderr)  # fmt: skip
+            return 1
+        judged = await calibration.judge_reference(pairs, provider, judge, args.max_usd)
+    finally:
+        for client in clients:
+            await client.aclose()
+    if judged.stopped_by_cap:
+        print(f"incomplete: stopped at --max-usd ${args.max_usd:.2f} after "
+              f"{len(judged.scores)} of {len(pairs)} pairs; nothing saved",
+              file=sys.stderr)  # fmt: skip
+        return 1
+    if judged.unscored > calibration.MAX_UNSCORED * len(pairs):
+        print(f"incomplete: {judged.unscored} of {len(pairs)} pairs unscored (more than "
+              f"{calibration.MAX_UNSCORED:.0%}); nothing saved", file=sys.stderr)  # fmt: skip
+        return 1
+    scored = [p for p in pairs if p.pid in judged.scores]
+    gold = [p.gold for p in scored]
+    reference_rate = sum(gold) / len(gold)
+    stats = [calibration.cut_stats([judged.scores[p.pid] for p in scored], gold, cut)
+             for cut in calibration.CANDIDATE_CUTS]  # fmt: skip
+    best = calibration.choose_cut(stats, reference_rate)
+    if best is None:
+        print(f"judge {judge.id}: no cut labels at half to twice G's rate; nothing saved",
+              file=sys.stderr)  # fmt: skip
+        for s in stats:
+            print(f"  cut {s.cut}: rate {s.rate:.1%} (G {reference_rate:.1%}), "
+                  f"precision {s.precision:.2f}, recall {s.recall:.2f}",
+                  file=sys.stderr)  # fmt: skip
+        return 1
+    calibration.save_cut(args.cuts_file, judge.id, {
+        "cut": best.cut, "rate": best.rate, "reference_rate": reference_rate,
+        "precision": best.precision, "recall": best.recall, "f1": best.f1, "n": len(scored),
+        "spent_usd": judged.spent_usd, "ts": time.time(),
+    })  # fmt: skip
+    print(f"judge {judge.id}: cut {best.cut} (rate {best.rate:.1%}, G {reference_rate:.1%}, "
+          f"precision {best.precision:.2f}, recall {best.recall:.2f}, n {len(scored)}, "
+          f"${judged.spent_usd:.2f}); saved to {args.cuts_file}")  # fmt: skip
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "fetch-model":
@@ -142,6 +217,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     settings = Settings()
     if args.command == "flywheel":
+        if args.action == "calibrate":
+            return asyncio.run(_flywheel_calibrate(args, settings))
         return asyncio.run(_flywheel_label(args, settings))
     if args.command == "keys":
         return asyncio.run(_keys(args, settings.db_url))

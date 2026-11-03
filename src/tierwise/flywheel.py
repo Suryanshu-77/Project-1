@@ -128,7 +128,7 @@ def needs_strong(cheap: int, strong: int, cut: int = DEFAULT_CUT) -> bool:
     return cheap < cut and strong >= GOOD_ENOUGH
 
 
-async def _ask(
+async def ask(
     provider: Provider, spec: ModelSpec, request: ChatRequest, policy: RetryPolicy
 ) -> tuple[ChatResponse, float]:
     """One paid call, retried on transient errors (429, 5xx, timeouts) like the gateway does."""
@@ -154,7 +154,7 @@ async def _label(
         contrast = contrast_for(routed, request, registry, set(providers))
         if contrast is None:
             raise ValueError(f"no configured contrast model can serve this {routed.id!r} sample")
-        reply, cost = await _ask(providers[contrast.provider], contrast, request, policy)
+        reply, cost = await ask(providers[contrast.provider], contrast, request, policy)
         spent += cost
         contrast_answer = reply.content or ""
         if reply.tool_calls or not contrast_answer or reply.finish_reason != "stop":
@@ -169,7 +169,7 @@ async def _label(
         )
         messages, cheap_key = judge_messages(_transcript(request), cheap, strong, seed=sample.id)
         grading = ChatRequest(model=judge.id, messages=messages, temperature=0)
-        verdict, cost = await _ask(providers[judge.provider], judge, grading, policy)
+        verdict, cost = await ask(providers[judge.provider], judge, grading, policy)
         spent += cost
         a, b = parse_scores(verdict.content or "")
         cheap_score, strong_score = (a, b) if cheap_key == "a" else (b, a)

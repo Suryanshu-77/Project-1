@@ -13,6 +13,8 @@ SPROUT has no stated license, so its prompts and answers are downloaded from Hug
 
 import hashlib
 import json
+import os
+import tempfile
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,7 +22,11 @@ from typing import Any
 
 from tierwise.config import CACHE_ROUTER_DIR, _resolve
 from tierwise.fetch import FetchError, download_file
-from tierwise.flywheel import needs_strong
+from tierwise.flywheel import _transcript, ask, judge_messages, needs_strong, parse_scores
+from tierwise.providers.base import Provider, ProviderError
+from tierwise.registry import ModelSpec
+from tierwise.reliability.retry import RetryPolicy
+from tierwise.schema import ChatRequest, Message
 
 CACHE = CACHE_ROUTER_DIR.parent / "sprout"  # ~/.cache/tierwise/sprout/<revision>/<file>
 FILE_URL = "https://huggingface.co/datasets/{dataset}/resolve/{revision}/{file}"
@@ -139,3 +145,91 @@ def choose_cut(stats: list[CutStats], reference_rate: float) -> CutStats | None:
         return None
 
     return max(eligible, key=lambda s: (s.f1, -s.cut))
+
+
+MAX_UNSCORED = 0.05  # more unscored pairs than this and the calibration is incomplete
+
+
+@dataclass(frozen=True)
+class Judged:
+    scores: dict[str, tuple[int, int]]  # pid -> (cheap, strong)
+    unscored: int
+    spent_usd: float
+    stopped_by_cap: bool
+
+
+async def judge_reference(
+    pairs: list[RefPair],
+    provider: Provider,
+    judge: ModelSpec,
+    max_usd: float,
+    policy: RetryPolicy = RetryPolicy(),  # noqa: B008 (frozen dataclass)
+) -> Judged:
+    """Score each reference pair with the judge, exactly as `flywheel label` does (the same
+    transcript, rubric and seeded answer order), stopping before a call could pass max_usd."""
+    scores: dict[str, tuple[int, int]] = {}
+    unscored, spent, last = 0, 0.0, 0.0
+    for pair in pairs:
+        if spent + last > max_usd:  # the last call's cost estimates the next one's
+            return Judged(scores, unscored, spent, stopped_by_cap=True)
+        request = ChatRequest(model=judge.id, messages=[Message(role="user", content=pair.prompt)])
+        messages, cheap_key = judge_messages(_transcript(request), pair.cheap, pair.strong,
+                                             seed=pair.pid)  # fmt: skip
+        grading = ChatRequest(model=judge.id, messages=messages, temperature=0)
+        try:
+            verdict, last = await ask(provider, judge, grading, policy)
+            spent += last
+            a, b = parse_scores(verdict.content or "")
+        except (ProviderError, ValueError):
+            unscored += 1
+            continue
+        scores[pair.pid] = (a, b) if cheap_key == "a" else (b, a)
+    return Judged(scores, unscored, spent, stopped_by_cap=False)
+
+
+def estimate_usd(pairs: list[RefPair], judge: ModelSpec) -> float:
+    """What judging the pairs should cost: ~4 characters a token, plus the rubric, ~20 out."""
+    tokens_in = sum((len(p.prompt) + len(p.cheap) + len(p.strong)) / 4 + 250 for p in pairs)
+    return (tokens_in * judge.price_in + 20 * len(pairs) * judge.price_out) / 1e6
+
+
+def _bad(path: Path, why: str) -> CalibrationError:
+    return CalibrationError(f"{path} is not a valid cuts file ({why}): fix or delete it, then "
+                            "rerun tierwise flywheel calibrate")  # fmt: skip
+
+
+def _read_cuts(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise _bad(path, str(exc)) from exc
+    if not isinstance(data, dict):
+        raise _bad(path, "not a JSON object")
+    for judge_id, entry in data.items():
+        cut = entry.get("cut") if isinstance(entry, dict) else None
+        # bool is an int subclass: `true` must not pass as a cut of 1
+        if not isinstance(cut, int) or isinstance(cut, bool) or cut not in CANDIDATE_CUTS:
+            raise _bad(path, f"{judge_id!r} has no cut in {CANDIDATE_CUTS}")
+    return data
+
+
+def load_cuts(path: Path) -> dict[str, int]:
+    """judge id -> its calibrated cut; {} when nothing was calibrated yet. A corrupt file is an
+    error: training on labels from a garbled cut would be worse than not training."""
+    return {judge_id: entry["cut"] for judge_id, entry in _read_cuts(path).items()}
+
+
+def save_cut(path: Path, judge_id: str, entry: dict[str, Any]) -> None:
+    """Replace one judge's entry, keeping the others; written atomically."""
+    data = _read_cuts(path) | {judge_id: entry}
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=".cuts-",
+                                      suffix=".part", delete=False)  # fmt: skip
+    try:
+        with tmp:
+            json.dump(data, tmp, indent=2)
+        os.replace(tmp.name, path)
+    finally:
+        Path(tmp.name).unlink(missing_ok=True)
