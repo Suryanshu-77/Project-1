@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 import tierwise
 from tierwise.api.app import create_app
+from tierwise.calibration import reference_file
 from tierwise.config import Settings, router_directory
 
 
@@ -27,6 +28,9 @@ def main() -> None:
         assert client.get("/healthz").status_code == 200
         assert len(app.state.registry.models) > 0, "packaged registry is empty"
     print(f"ok   wheel serves with {len(app.state.registry.models)} packaged models")
+    pairs = reference_file()["pairs"]  # flywheel calibrate's reference, without the repo
+    assert len(pairs) == 400, f"packaged calibration reference has {len(pairs)} pairs"
+    print(f"ok   packaged calibration reference: {len(pairs)} pairs")
 
 
 if __name__ == "__main__":

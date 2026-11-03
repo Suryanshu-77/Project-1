@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.11.0: 2026-11-03
+
+**The label's cut is calibrated per judge.** The flywheel's pre-registered test showed that the cut on the cheaper answer's score is a property of the judge: Claude Haiku's labels at the shipped cut of 4 made routing worse (−10.9 points of cost saved at 99% quality), and at a cut of 2 the same judgments helped (+5.8). See `BENCHMARK.md`.
+
+- **`tierwise flywheel calibrate`** has the configured judge score 400 packaged SPROUT reference pairs, picks the cut whose labels agree best with SPROUT's (rate within ½× to 2× of SPROUT's, then best F1, ties to the smaller cut) and saves it to `~/.cache/tierwise/judge_cuts.json`. `--dry-run` prints the cost; `--max-usd` (default 0.10) caps it. Nothing is saved from an incomplete run or when no cut qualifies.
+- **New optional extra `tierwise[calibrate]`** (`pyarrow`). The reference ships as SPROUT hashes at a pinned commit, never text; calibration downloads and sha256-checks the parquet files (about 407 MB, once).
+- **Retraining applies each judge's cut** to the two stored scores, so recalibrating relabels history for free. `RetrainReport` and each version's `metrics.json` gain `cuts_used`. A corrupt cuts file stops retraining with a clear message.
+- **Labels record their judge.** The new `shadow_samples.judge_model` column is added to existing databases on startup. Labels from before 0.11 have none and keep the cut of 4. If you know which judge scored them, stamp them so its calibrated cut applies:
+  `UPDATE shadow_samples SET judge_model = '<id>' WHERE judge_model IS NULL AND judge_score_strong IS NOT NULL;`
+- **API:** `flywheel.needs_strong` gains `cut` (default `DEFAULT_CUT = 4`, 0.10's rule), `flywheel._ask` is now `ask`, `training.retrain.shadow_rows` gains `cuts`, `retrain.run` gains `cuts_path`, and `fetch.download_file` is the checked download `fetch_model` uses.
+
 ## 0.10.0: 2026-11-03
 
 **Flywheel labels mean what they say.** A pre-registered test with a paid judge found that labels from a judge scoring only the cheaper answer mark prompts that *both* models fail as "needs strong". Routing those to the flagship buys nothing. See `BENCHMARK.md`.
