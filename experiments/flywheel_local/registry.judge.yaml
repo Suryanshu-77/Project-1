@@ -1,0 +1,14 @@
+# Protocol 4's judge: Claude Haiku through AICredits' OpenAI-compatible API, under the product
+# registry's id (so the saved cut is keyed like a real deployment's). Prices: AICredits' list.
+baseline_model: claude-haiku-5-5
+
+models:
+  - id: claude-haiku-5-5
+    provider: openai
+    upstream_id: anthropic/claude-haiku-5.5
+    price_in: 0.10
+    price_out: 0.50
+    context: 200000
+    caps: [json]
+    quality: 0.60
+    tier: basic
