@@ -70,7 +70,7 @@ def _parser() -> argparse.ArgumentParser:
         "--dry-run", action="store_true", help="fetch and check the reference, print the cost"
     )
     calibrate.add_argument(
-        "--max-usd", type=_budget, default=0.10, help="stop (and save nothing) past this spend"
+        "--max-usd", type=_budget, default=0.25, help="stop (and save nothing) past this spend"
     )
     calibrate.add_argument("--cuts-file", type=Path, default=JUDGE_CUTS_FILE)
     return parser

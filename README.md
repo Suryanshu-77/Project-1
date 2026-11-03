@@ -312,7 +312,7 @@ and the retrained router got worse; at its calibrated cut the same judgments hel
 ```bash
 pip install 'tierwise[calibrate]'          # pyarrow, to read SPROUT's parquet files
 tierwise flywheel calibrate --dry-run      # fetch and check the reference, print the cost
-tierwise flywheel calibrate                # about 400 judge calls; --max-usd caps it (0.10)
+tierwise flywheel calibrate                # about 400 judge calls; --max-usd caps it (0.25)
 ```
 
 1. **Reference.** tierwise ships 400 SPROUT prompt pairs (gpt-4o-mini against gpt-4o) as hashes
@@ -328,7 +328,7 @@ tierwise flywheel calibrate                # about 400 judge calls; --max-usd ca
 
 Set `TIERWISE_JUDGE_MODEL` to the judge you label with first: the default is the baseline
 flagship. A run whose estimate is above `--max-usd` is refused before any call (Claude
-Haiku: about $0.06; a flagship judge: about $2).
+Haiku: about $0.17, measured; a flagship judge: about $7).
 
 Each label records its judge (`shadow_samples.judge_model`), and retraining applies that
 judge's cut to the two stored scores. Recalibrating relabels all of history without a single

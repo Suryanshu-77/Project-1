@@ -187,10 +187,15 @@ async def judge_reference(
     return Judged(scores, unscored, spent, stopped_by_cap=False)
 
 
+OUT_TOKENS = 450  # a judge asked for JSON only still writes ~420 tokens (Haiku, 400 calls)
+
+
 def estimate_usd(pairs: list[RefPair], judge: ModelSpec) -> float:
-    """What judging the pairs should cost: ~4 characters a token, plus the rubric, ~20 out."""
-    tokens_in = sum((len(p.prompt) + len(p.cheap) + len(p.strong)) / 4 + 250 for p in pairs)
-    return (tokens_in * judge.price_in + 20 * len(pairs) * judge.price_out) / 1e6
+    """What judging the pairs should cost. Calibrated on Claude Haiku's 400 measured reference
+    calls ($0.1585 at list): input ran 1.5x of ~4 characters a token plus the rubric."""
+    tokens_in = sum(1.5 * ((len(p.prompt) + len(p.cheap) + len(p.strong)) / 4 + 250)
+                    for p in pairs)  # fmt: skip
+    return (tokens_in * judge.price_in + OUT_TOKENS * len(pairs) * judge.price_out) / 1e6
 
 
 def _bad(path: Path, why: str) -> CalibrationError:

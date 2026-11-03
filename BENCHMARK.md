@@ -159,7 +159,23 @@ control by 12.7 points against a 5.3-point retraining noise band.
 - **Weight 5 and 2,000 labels were fixed by stage 0.** Fewer labels, or weight 1, didn't help even
   with perfect labels.
 
-**Spent in all:** $1.12 at list price, about ₹124 through AICredits, for every paid run above: ₹33.79 before Protocol 2 (from the dashboard), then about ₹90 for Protocols 2 and 3 (estimated from the measured rate).
+### The product's calibration, run for real (Protocol 4)
+
+tierwise 0.11 turned the finding above into a command: `tierwise flywheel calibrate` chooses each
+judge's cut against 400 packaged SPROUT reference pairs (rate within ½× to 2× of SPROUT's, then
+best F1). **[Protocol 4](experiments/flywheel_local/PROTOCOL-4.md)** ran it once, end to end,
+with Claude Haiku, and pre-registered the prediction **c = 2**. Result: **SUCCESS.**
+
+| | Cut | Label rate (G 6.5%) | Precision | Recall | Unscored | Spent |
+|---|---|---|---|---|---|---|
+| `calibrate`, live (Protocol 4) | **2** | 4.25% | 94% | 61.5% | 0 / 400 | $0.159 |
+| Stored pilot judgments (Protocol 3) | 2 | 4.5% | 94% | 65% | n/a | n/a |
+
+The hosted judge's scores drifted a little between runs, as expected, but not enough to change the
+choice. These are the pairs Protocol 3 chose from, so this shows the product reproduces it, not
+that c = 2 transfers.
+
+**Spent in all:** $1.28 at list price, about ₹141 through AICredits, for every paid run above: ₹33.79 before Protocol 2 (from the dashboard), about ₹90 for Protocols 2 and 3, and about ₹17.5 for Protocol 4 (both estimated from the measured rate).
 
 ## Limitations
 
