@@ -20,6 +20,7 @@ from typing import Any
 
 from tierwise.config import CACHE_ROUTER_DIR, _resolve
 from tierwise.fetch import FetchError, download_file
+from tierwise.flywheel import needs_strong
 
 CACHE = CACHE_ROUTER_DIR.parent / "sprout"  # ~/.cache/tierwise/sprout/<revision>/<file>
 FILE_URL = "https://huggingface.co/datasets/{dataset}/resolve/{revision}/{file}"
@@ -100,3 +101,41 @@ def fetch_reference(ref: dict[str, Any], read: ReadRows = read_rows) -> list[Ref
         raise CalibrationError(f"missing {missing} of {len(ref['pairs'])} reference pairs in "
                                "SPROUT's files")  # fmt: skip
     return [got[(p["file"], p["row"])] for p in ref["pairs"]]
+
+
+CANDIDATE_CUTS = (2, 3, 4)  # needs strong = cheap < cut and strong >= GOOD_ENOUGH
+
+
+@dataclass(frozen=True)
+class CutStats:
+    """How one cut's labels agree with the reference labels (SPROUT's verdicts)."""
+
+    cut: int
+    rate: float  # the share of pairs it labels "needs strong"
+    precision: float  # of those, the share SPROUT agrees with (0.0 when it labels none)
+    recall: float  # of SPROUT's positives, the share it finds
+    f1: float
+
+
+def cut_stats(scores: list[tuple[int, int]], gold: list[bool], cut: int) -> CutStats:
+    labels = [needs_strong(cheap, strong, cut) for cheap, strong in scores]
+    hits = sum(label and g for label, g in zip(labels, gold, strict=True))
+    precision = hits / sum(labels) if any(labels) else 0.0
+    recall = hits / sum(gold) if any(gold) else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if hits else 0.0
+    return CutStats(cut, sum(labels) / len(labels), precision, recall, f1)
+
+
+def choose_cut(stats: list[CutStats], reference_rate: float) -> CutStats | None:
+    """The cut to save for this judge, or None when no candidate is trustworthy.
+
+    Protocol 3's rule: a cut is eligible only when its label rate is within half to twice the
+    reference rate (inclusive); among the eligible ones the best F1 wins, a tie going to the
+    smaller cut. None when nothing is eligible: then nothing is saved for the judge.
+    """
+    eligible = [s for s in stats if 0.5 * reference_rate <= s.rate <= 2.0 * reference_rate]
+
+    if not eligible:
+        return None
+
+    return max(eligible, key=lambda s: (s.f1, -s.cut))

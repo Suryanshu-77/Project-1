@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 from typing import Any
 
@@ -6,7 +7,11 @@ import pytest
 
 from tierwise import calibration
 from tierwise.calibration import (
+    CANDIDATE_CUTS,
     CalibrationError,
+    CutStats,
+    choose_cut,
+    cut_stats,
     fetch_reference,
     read_rows,
     reference_file,
@@ -125,3 +130,57 @@ def test_packaged_reference_is_400_text_free_pairs_at_a_pinned_revision() -> Non
     assert {p["file"] for p in ref["pairs"]} <= set(ref["files"])
     assert all(set(f) == {"sha256", "size"} for f in ref["files"].values())
     assert (ref["cheap"], ref["strong"]) == ("openai-gpt-4o-mini", "openai-gpt-4o")
+
+
+DATA = Path(__file__).parent / "data"
+
+
+def _stats(cut: int, rate: float, f1: float) -> CutStats:
+    return CutStats(cut=cut, rate=rate, precision=f1, recall=f1, f1=f1)
+
+
+def test_cut_stats_counts() -> None:
+    s = cut_stats([(1, 4), (1, 4), (3, 4), (5, 5)], [True, False, True, False], cut=2)
+    assert (s.cut, s.rate, s.precision, s.recall) == (2, 0.5, 0.5, 0.5)
+    assert s.f1 == pytest.approx(0.5)
+
+
+def test_cut_stats_with_no_labels_has_zero_precision() -> None:
+    s = cut_stats([(4, 4), (5, 5)], [True, False], cut=2)
+    assert (s.rate, s.precision, s.recall, s.f1) == (0.0, 0.0, 0.0, 0.0)
+
+
+def test_choose_cut_drops_rates_outside_the_band() -> None:
+    """Reference rate 10%: only rates from 5% to 20% are eligible, whatever their F1."""
+    stats = [_stats(2, 0.04, 0.9), _stats(3, 0.08, 0.5), _stats(4, 0.25, 0.9)]
+    assert choose_cut(stats, 0.10) == stats[1]
+
+
+def test_choose_cut_band_edges_are_eligible() -> None:
+    stats = [_stats(2, 0.05, 0.4), _stats(3, 0.20, 0.6)]
+    assert choose_cut(stats, 0.10) == stats[1]
+
+
+def test_choose_cut_best_f1_wins() -> None:
+    stats = [_stats(2, 0.09, 0.6), _stats(3, 0.12, 0.7), _stats(4, 0.15, 0.5)]
+    assert choose_cut(stats, 0.10) == stats[1]
+
+
+def test_choose_cut_tie_goes_to_smaller_cut() -> None:
+    stats = [_stats(3, 0.12, 0.7), _stats(2, 0.09, 0.7)]
+    assert choose_cut(stats, 0.10) == stats[1]
+
+
+def test_choose_cut_none_when_nothing_eligible() -> None:
+    assert choose_cut([_stats(2, 0.01, 0.9), _stats(4, 0.5, 0.9)], 0.10) is None
+
+
+def test_haiku_pilot_reproduces_protocol_3() -> None:
+    """Claude Haiku's 400 stored pilot judgments: Protocol 3 chose c = 2 from exactly these."""
+    rows = json.loads((DATA / "haiku_pilot_scores.json").read_text(encoding="utf-8"))
+    scores, gold = [(c, s) for c, s, _ in rows], [bool(g) for *_, g in rows]
+    stats = [cut_stats(scores, gold, c) for c in CANDIDATE_CUTS]
+    best = choose_cut(stats, sum(gold) / len(gold))
+    assert best is not None and best.cut == 2
+    assert round(best.rate, 3) == 0.045 and round(best.precision, 2) == 0.94
+    assert round(best.recall, 2) == 0.65
