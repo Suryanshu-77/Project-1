@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.11.1: 2026-11-03
+
+**`tierwise flywheel calibrate` can finish with its defaults.** 0.11.0's cost estimate assumed a judge writes about 20 tokens per verdict. Claude Haiku's 400 measured reference calls averaged about 1,858 tokens in and 421 out, for $0.1585 at list price, three times the estimate. A default Haiku run therefore passed the up-front check, stopped at the $0.10 cap after about 250 pairs, and saved nothing.
+
+- **The estimate is calibrated on that measurement:** 1.5x the old input estimate, plus 450 output tokens per call. For the reference pairs it now gives $0.166 for Haiku, against the measured $0.159.
+- **`--max-usd` defaults to 0.25,** enough for a Haiku calibration with headroom. A judge whose estimate is above the cap is still refused before any call. The default flagship judge estimates about $7.
+
 ## 0.11.0: 2026-11-03
 
 **The label's cut is calibrated per judge.** The flywheel's pre-registered test showed that the cut on the cheaper answer's score is a property of the judge: Claude Haiku's labels at the shipped cut of 4 made routing worse (−10.9 points of cost saved at 99% quality), and at a cut of 2 the same judgments helped (+5.8). See `BENCHMARK.md`.

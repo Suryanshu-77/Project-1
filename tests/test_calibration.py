@@ -18,6 +18,7 @@ from tierwise.calibration import (
     RefPair,
     choose_cut,
     cut_stats,
+    estimate_usd,
     fetch_reference,
     judge_reference,
     load_cuts,
@@ -419,3 +420,20 @@ def test_flywheel_calibrate_refuses_when_the_estimate_passes_the_cap(
     out = tmp_path / "cuts.json"
     assert main(["flywheel", "calibrate", "--cuts-file", str(out), "--max-usd", "0.001"]) == 1
     assert calls == [] and not out.exists() and "--max-usd" in capsys.readouterr().err
+
+
+def test_estimate_matches_the_measured_haiku_cost() -> None:
+    """Claude Haiku judged these 400 pairs for $0.1585 at list price: ~1,858 tokens in and ~421
+    out per call. 0.11.0 assumed 20 tokens out and estimated a third of that, so a default run
+    passed the up-front check and then stopped at the cap, saving nothing."""
+    haiku = JUDGE.model_copy(update={"price_in": 0.10, "price_out": 0.50})
+    pair = RefPair(pid="p", prompt="x" * 1352, cheap="x" * 1350, strong="x" * 1350, gold=False)
+    per_call = 0.1585 / 400  # the pilot's average pair is ~4,052 characters
+    assert estimate_usd([pair], haiku) == pytest.approx(per_call, rel=0.15)
+
+
+def test_default_cap_lets_a_haiku_calibration_finish() -> None:
+    from tierwise.__main__ import _parser
+
+    cap = _parser().parse_args(["flywheel", "calibrate"]).max_usd
+    assert cap >= 0.1585 * 1.25  # list price, plus headroom for the measured cost
