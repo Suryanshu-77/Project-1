@@ -519,11 +519,12 @@ Releases go to PyPI from a tag through
    - workflow `release.yml`, environment `pypi`
 2. **Once,** in the repository settings, create the `pypi` environment. Add yourself as a
    required reviewer so every publish waits for your approval.
-3. **Each release:** bump `version` in `pyproject.toml`, add a `CHANGELOG.md` entry, then:
+3. **Each release:** bump `version` in `pyproject.toml`, add a `CHANGELOG.md` entry, then tag
+   that version with a `v` in front (`X.Y.Z` is the new version, for example `0.11.0`):
 
    ```bash
-   git tag v0.8.0
-   git push origin v0.8.0
+   git tag -a vX.Y.Z -m "tierwise X.Y.Z"
+   git push origin vX.Y.Z
    ```
 
 The workflow checks that the tag matches the version, builds, smoke-tests the installed wheel
